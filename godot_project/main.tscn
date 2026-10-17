@@ -1,0 +1,33 @@
+[gd_scene format=3 uid="uid://b8xq7y3m6rv1p"]
+
+[ext_resource type="PackedScene" path="res://assets/models/hedgehog.glb" id="1_hedgehog"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_preview"]
+sky_horizon_color = Color(0.64625, 0.65575, 0.67075, 1)
+ground_horizon_color = Color(0.64625, 0.65575, 0.67075, 1)
+
+[sub_resource type="Sky" id="Sky_preview"]
+sky_material = SubResource("ProceduralSkyMaterial_preview")
+
+[sub_resource type="Environment" id="Environment_preview"]
+background_mode = 2
+sky = SubResource("Sky_preview")
+tonemap_mode = 2
+glow_enabled = true
+
+[node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_preview")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.866023, -0.433016, 0.250001, 0, 0.499998, 0.866027, -0.500003, 0.749999, -0.43301, 0, 3, 0)
+shadow_enabled = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.965926, 0.258819, 0, -0.258819, 0.965926, 0, 1.5, 3)
+
+[node name="ModelRoot" type="Node3D" parent="."]
+
+[node name="Hedgehog" parent="ModelRoot" instance=ExtResource("1_hedgehog")]
+
