@@ -5,7 +5,9 @@
       "providers": "CPU"
     },
     "class_type": "RemBGSession+",
-    "_meta": { "title": "RemBG_Session" }
+    "_meta": {
+      "title": "RemBG_Session"
+    }
   },
   "10": {
     "inputs": {
@@ -13,7 +15,9 @@
       "upload": "image"
     },
     "class_type": "LoadImage",
-    "_meta": { "title": "INJECT_front_image_path" }
+    "_meta": {
+      "title": "INJECT_front_image_path"
+    }
   },
   "11": {
     "inputs": {
@@ -21,7 +25,9 @@
       "upload": "image"
     },
     "class_type": "LoadImage",
-    "_meta": { "title": "INJECT_back_image_path" }
+    "_meta": {
+      "title": "INJECT_back_image_path"
+    }
   },
   "12": {
     "inputs": {
@@ -29,35 +35,64 @@
       "upload": "image"
     },
     "class_type": "LoadImage",
-    "_meta": { "title": "INJECT_side_image_path" }
+    "_meta": {
+      "title": "INJECT_side_image_path"
+    }
   },
   "13": {
     "inputs": {
-      "image": ["10", 0],
-      "rembg_session": ["9", 0]
+      "image": [
+        "10",
+        0
+      ],
+      "rembg_session": [
+        "9",
+        0
+      ]
     },
     "class_type": "ImageRemoveBackground+",
-    "_meta": { "title": "RMBG_Front" }
+    "_meta": {
+      "title": "RMBG_Front"
+    }
   },
   "14": {
     "inputs": {
-      "image": ["11", 0],
-      "rembg_session": ["9", 0]
+      "image": [
+        "11",
+        0
+      ],
+      "rembg_session": [
+        "9",
+        0
+      ]
     },
     "class_type": "ImageRemoveBackground+",
-    "_meta": { "title": "RMBG_Back" }
+    "_meta": {
+      "title": "RMBG_Back"
+    }
   },
   "15": {
     "inputs": {
-      "image": ["12", 0],
-      "rembg_session": ["9", 0]
+      "image": [
+        "12",
+        0
+      ],
+      "rembg_session": [
+        "9",
+        0
+      ]
     },
     "class_type": "ImageRemoveBackground+",
-    "_meta": { "title": "RMBG_Side" }
+    "_meta": {
+      "title": "RMBG_Side"
+    }
   },
   "16": {
     "inputs": {
-      "image": ["13", 0],
+      "image": [
+        "13",
+        0
+      ],
       "width": 518,
       "height": 518,
       "interpolation": "lanczos",
@@ -66,11 +101,16 @@
       "multiple_of": 0
     },
     "class_type": "ImageResize+",
-    "_meta": { "title": "Pad_Front_518" }
+    "_meta": {
+      "title": "Pad_Front_518"
+    }
   },
   "17": {
     "inputs": {
-      "image": ["14", 0],
+      "image": [
+        "14",
+        0
+      ],
       "width": 518,
       "height": 518,
       "interpolation": "lanczos",
@@ -79,11 +119,16 @@
       "multiple_of": 0
     },
     "class_type": "ImageResize+",
-    "_meta": { "title": "Pad_Back_518" }
+    "_meta": {
+      "title": "Pad_Back_518"
+    }
   },
   "18": {
     "inputs": {
-      "image": ["15", 0],
+      "image": [
+        "15",
+        0
+      ],
       "width": 518,
       "height": 518,
       "interpolation": "lanczos",
@@ -92,7 +137,9 @@
       "multiple_of": 0
     },
     "class_type": "ImageResize+",
-    "_meta": { "title": "Pad_Side_518" }
+    "_meta": {
+      "title": "Pad_Side_518"
+    }
   },
   "20": {
     "inputs": {
@@ -101,38 +148,65 @@
       "cublas_ops": false
     },
     "class_type": "Hy3DModelLoader",
-    "_meta": { "title": "Load_Hunyuan3D_DiT" }
+    "_meta": {
+      "title": "Load_Hunyuan3D_DiT"
+    }
   },
   "30": {
     "inputs": {
-      "pipeline": ["20", 0],
-      "front": ["16", 0],
-      "back": ["17", 0],
-      "left": ["18", 0],
+      "pipeline": [
+        "20",
+        0
+      ],
+      "front": [
+        "16",
+        0
+      ],
+      "back": [
+        "17",
+        0
+      ],
+      "left": [
+        "18",
+        0
+      ],
       "guidance_scale": 5.5,
       "steps": 30,
       "seed": 42,
       "scheduler": "FlowMatchEulerDiscreteScheduler"
     },
     "class_type": "Hy3DGenerateMeshMultiView",
-    "_meta": { "title": "Generate_MultiView_Latents" }
+    "_meta": {
+      "title": "Generate_MultiView_Latents"
+    }
   },
   "31": {
     "inputs": {
-      "vae": ["20", 1],
-      "latents": ["30", 0],
+      "vae": [
+        "20",
+        1
+      ],
+      "latents": [
+        "30",
+        0
+      ],
       "box_v": 1.01,
-      "octree_resolution": 384,
+      "octree_resolution": 256,
       "num_chunks": 8000,
       "mc_level": 0.0,
       "mc_algo": "mc"
     },
     "class_type": "Hy3DVAEDecode",
-    "_meta": { "title": "MarchingCubes_Decode" }
+    "_meta": {
+      "title": "MarchingCubes_Decode"
+    }
   },
   "32": {
     "inputs": {
-      "trimesh": ["31", 0],
+      "trimesh": [
+        "31",
+        0
+      ],
       "remove_floaters": true,
       "remove_degenerate_faces": true,
       "reduce_faces": true,
@@ -140,79 +214,136 @@
       "smooth_normals": true
     },
     "class_type": "Hy3DPostprocessMesh",
-    "_meta": { "title": "INJECT_mesh_decimation_target_faces" }
+    "_meta": {
+      "title": "INJECT_mesh_decimation_target_faces"
+    }
   },
   "33": {
     "inputs": {
-      "trimesh": ["32", 0]
+      "trimesh": [
+        "32",
+        0
+      ]
     },
     "class_type": "Hy3DMeshUVWrap",
-    "_meta": { "title": "UV_Unwrap_xatlas" }
+    "_meta": {
+      "title": "UV_Unwrap_xatlas"
+    }
   },
   "34": {
     "inputs": {
       "model": "hunyuan3d-paint-v2-0"
     },
     "class_type": "DownloadAndLoadHy3DPaintModel",
-    "_meta": { "title": "Load_Paint_Model" }
+    "_meta": {
+      "title": "Load_Paint_Model"
+    }
   },
   "35": {
     "inputs": {
-      "trimesh": ["33", 0],
+      "trimesh": [
+        "33",
+        0
+      ],
       "render_size": 1024,
       "texture_size": 2048
     },
     "class_type": "Hy3DRenderMultiView",
-    "_meta": { "title": "Render_Geometry_Passes" }
+    "_meta": {
+      "title": "Render_Geometry_Passes"
+    }
   },
   "36": {
     "inputs": {
-      "pipeline": ["34", 0],
-      "ref_image": ["16", 0],
+      "pipeline": [
+        "34",
+        0
+      ],
+      "ref_image": [
+        "16",
+        0
+      ],
       "view_size": 1024,
-      "normal_maps": ["35", 0],
-      "position_maps": ["35", 1],
-      "steps": 25,
-      "guidance_scale": 4.5,
+      "normal_maps": [
+        "35",
+        0
+      ],
+      "position_maps": [
+        "35",
+        1
+      ],
+      "steps": 35,
+      "guidance_scale": 5.5,
       "seed": 42
     },
     "class_type": "Hy3DSampleMultiView",
-    "_meta": { "title": "Paint_Diffusion_Sampler" }
+    "_meta": {
+      "title": "Paint_Diffusion_Sampler"
+    }
   },
   "37": {
     "inputs": {
-      "images": ["36", 0],
-      "renderer": ["35", 2]
+      "images": [
+        "36",
+        0
+      ],
+      "renderer": [
+        "35",
+        2
+      ]
     },
     "class_type": "Hy3DBakeFromMultiview",
-    "_meta": { "title": "Bake_Textures" }
+    "_meta": {
+      "title": "Bake_Textures"
+    }
   },
   "38": {
     "inputs": {
-      "texture": ["37", 0],
-      "mask": ["37", 1],
-      "inpaint_radius": 3,
+      "texture": [
+        "37",
+        0
+      ],
+      "mask": [
+        "37",
+        1
+      ],
+      "inpaint_radius": 5,
       "inpaint_method": "ns"
     },
     "class_type": "CV2InpaintTexture",
-    "_meta": { "title": "UV_Seam_Inpainting" }
+    "_meta": {
+      "title": "UV_Seam_Inpainting"
+    }
   },
   "39": {
     "inputs": {
-      "texture": ["38", 0],
-      "renderer": ["35", 2]
+      "texture": [
+        "38",
+        0
+      ],
+      "renderer": [
+        "35",
+        2
+      ]
     },
     "class_type": "Hy3DApplyTexture",
-    "_meta": { "title": "Apply_PBR_Texture" }
+    "_meta": {
+      "title": "Apply_PBR_Texture"
+    }
   },
   "40": {
     "inputs": {
-      "trimesh": ["39", 0],
+      "trimesh": [
+        "39",
+        0
+      ],
       "filename_prefix": "DYNAMIC_OUTPUT_PREFIX_PLACEHOLDER",
       "file_format": "glb",
       "save_file": true
     },
     "class_type": "Hy3DExportMesh",
-    "_meta": { "title": "INJECT_output_filename" }
+    "_meta": {
+      "title": "INJECT_output_filename"
+    }
   }
 }
