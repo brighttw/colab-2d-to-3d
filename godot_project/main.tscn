@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://b8xq7y3m6rv1p"]
 
-[ext_resource type="PackedScene" path="res://assets/models/hedgehog.glb" id="1_hedgehog"]
+[ext_resource type="PackedScene" path="res://assets/models/hedgehog_v2.glb" id="1_hedgehog"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_preview"]
 sky_top_color = Color(0.78, 0.82, 0.88, 1)
@@ -16,10 +16,10 @@ background_mode = 2
 sky = SubResource("Sky_preview")
 ambient_light_source = 3
 ambient_light_color = Color(0.98, 0.93, 0.88, 1)
-ambient_light_sky_contribution = 0.65
-ambient_light_energy = 0.85
+ambient_light_sky_contribution = 0.40
+ambient_light_energy = 0.22
 tonemap_mode = 2
-tonemap_exposure = 1.05
+tonemap_exposure = 0.95
 ssao_enabled = true
 ssao_radius = 0.45
 ssao_intensity = 0.6
@@ -35,7 +35,7 @@ environment = SubResource("Environment_preview")
 [node name="KeyLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.819152, -0.32899, 0.469846, 0, 0.819152, 0.573576, -0.573576, -0.469846, 0.67101, 0, 3, 2)
 light_color = Color(1, 0.98, 0.95, 1)
-light_energy = 0.85
+light_energy = 0.50
 shadow_enabled = true
 shadow_bias = 0.03
 shadow_normal_bias = 1.5
@@ -45,13 +45,13 @@ shadow_blur = 3.0
 [node name="FillLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.766044, 0.219846, -0.604023, 0, 0.939693, 0.34202, 0.642788, -0.262003, 0.719846, 0, 1, 2)
 light_color = Color(1, 0.92, 0.86, 1)
-light_energy = 0.45
+light_energy = 0.28
 shadow_enabled = false
 
 [node name="RimLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(-0.939693, -0.116978, -0.321394, 0, 0.939693, -0.34202, 0.34202, -0.321394, -0.883022, 0, 2.5, -2)
 light_color = Color(1, 0.96, 0.9, 1)
-light_energy = 0.35
+light_energy = 0.22
 shadow_enabled = false
 
 [node name="Camera3D" type="Camera3D" parent="."]

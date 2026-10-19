@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 使用說明: run_colab_inference.sh --front FRONT.png --back BACK.png --side SIDE.png --output MODEL.glb [選項]
 
-透過 Google Colab CLI 在遠端 GPU (預設 L4) 自動執行 Hunyuan3D-2 MV，將三視圖轉換為相容 Godot 4 的 .glb 3D 模型。
+透過 Google Colab CLI 在遠端 GPU (預設 L4) 自動執行 3D 生成管線 (預設 Microsoft TRELLIS，亦支援 Hunyuan3D-2)，將三視圖轉換為相容 Godot 4 的 .glb 3D 模型。
 
 必要參數:
   -f, --front PATH       正面視角圖片路徑
@@ -14,7 +14,8 @@ usage() {
   -o, --output PATH      輸出的 .glb 模型儲存路徑
 
 選用參數:
-  --faces COUNT          目標三角面數 (預設: 15000)
+  -e, --engine MODEL     3D 引擎: trellis (預設，微軟多視角原生烘焙) 或 hunyuan
+  --faces COUNT          目標三角面數 (Hunyuan3D 使用，預設: 15000)
   --gpu MODEL            Colab GPU 型號 (預設: L4；亦支援 A100)
   --session NAME         指定或重用 Colab 會話名稱
   --keep-session         推論完成後保持會話運行 (預設自動停止以節省點數)
@@ -30,6 +31,7 @@ FRONT_IMG=""
 BACK_IMG=""
 SIDE_IMG=""
 OUTPUT_GLB=""
+ENGINE="trellis"
 FACES="15000"
 GPU="L4"
 SESSION=""
@@ -38,6 +40,11 @@ TIMEOUT="3600"
 
 while (($#)); do
   case "$1" in
+    -e|--engine)
+      (($# >= 2)) || { echo "缺少參數: $1" >&2; usage >&2; exit 2; }
+      ENGINE="$2"
+      shift 2
+      ;;
     -f|--front)
       (($# >= 2)) || { echo "缺少參數: $1" >&2; usage >&2; exit 2; }
       FRONT_IMG="$2"
@@ -105,6 +112,7 @@ ARGS=(
   --back "$BACK_IMG"
   --side "$SIDE_IMG"
   --output "$OUTPUT_GLB"
+  --engine "$ENGINE"
   --faces "$FACES"
   --gpu "$GPU"
   --timeout "$TIMEOUT"

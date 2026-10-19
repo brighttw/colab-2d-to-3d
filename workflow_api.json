@@ -170,8 +170,8 @@
         "18",
         0
       ],
-      "guidance_scale": 5.5,
-      "steps": 30,
+      "guidance_scale": 6.0,
+      "steps": 50,
       "seed": 42,
       "scheduler": "FlowMatchEulerDiscreteScheduler"
     },
@@ -191,8 +191,8 @@
         0
       ],
       "box_v": 1.01,
-      "octree_resolution": 256,
-      "num_chunks": 8000,
+      "octree_resolution": 384,
+      "num_chunks": 16000,
       "mc_level": 0.0,
       "mc_algo": "mc"
     },
@@ -210,7 +210,7 @@
       "remove_floaters": true,
       "remove_degenerate_faces": true,
       "reduce_faces": true,
-      "max_facenum": 15000,
+      "max_facenum": 40000,
       "smooth_normals": true
     },
     "class_type": "Hy3DPostprocessMesh",
@@ -218,123 +218,10 @@
       "title": "INJECT_mesh_decimation_target_faces"
     }
   },
-  "33": {
-    "inputs": {
-      "trimesh": [
-        "32",
-        0
-      ]
-    },
-    "class_type": "Hy3DMeshUVWrap",
-    "_meta": {
-      "title": "UV_Unwrap_xatlas"
-    }
-  },
-  "34": {
-    "inputs": {
-      "model": "hunyuan3d-paint-v2-0"
-    },
-    "class_type": "DownloadAndLoadHy3DPaintModel",
-    "_meta": {
-      "title": "Load_Paint_Model"
-    }
-  },
-  "35": {
-    "inputs": {
-      "trimesh": [
-        "33",
-        0
-      ],
-      "render_size": 1024,
-      "texture_size": 2048
-    },
-    "class_type": "Hy3DRenderMultiView",
-    "_meta": {
-      "title": "Render_Geometry_Passes"
-    }
-  },
-  "36": {
-    "inputs": {
-      "pipeline": [
-        "34",
-        0
-      ],
-      "ref_image": [
-        "16",
-        0
-      ],
-      "view_size": 1024,
-      "normal_maps": [
-        "35",
-        0
-      ],
-      "position_maps": [
-        "35",
-        1
-      ],
-      "steps": 35,
-      "guidance_scale": 5.5,
-      "seed": 42
-    },
-    "class_type": "Hy3DSampleMultiView",
-    "_meta": {
-      "title": "Paint_Diffusion_Sampler"
-    }
-  },
-  "37": {
-    "inputs": {
-      "images": [
-        "36",
-        0
-      ],
-      "renderer": [
-        "35",
-        2
-      ]
-    },
-    "class_type": "Hy3DBakeFromMultiview",
-    "_meta": {
-      "title": "Bake_Textures"
-    }
-  },
-  "38": {
-    "inputs": {
-      "texture": [
-        "37",
-        0
-      ],
-      "mask": [
-        "37",
-        1
-      ],
-      "inpaint_radius": 5,
-      "inpaint_method": "ns"
-    },
-    "class_type": "CV2InpaintTexture",
-    "_meta": {
-      "title": "UV_Seam_Inpainting"
-    }
-  },
-  "39": {
-    "inputs": {
-      "texture": [
-        "38",
-        0
-      ],
-      "renderer": [
-        "35",
-        2
-      ]
-    },
-    "class_type": "Hy3DApplyTexture",
-    "_meta": {
-      "title": "Apply_PBR_Texture"
-    }
-  },
   "40": {
     "inputs": {
       "trimesh": [
-        "39",
+        "32",
         0
       ],
       "filename_prefix": "DYNAMIC_OUTPUT_PREFIX_PLACEHOLDER",
