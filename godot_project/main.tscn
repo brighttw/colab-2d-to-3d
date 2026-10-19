@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://b8xq7y3m6rv1p"]
 
-[ext_resource type="PackedScene" path="res://assets/models/hedgehog_v2.glb" id="1_hedgehog"]
+[ext_resource type="PackedScene" path="res://assets/models/hedgehog_adventurer.glb" id="1_hedgehog"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_preview"]
 sky_top_color = Color(0.78, 0.82, 0.88, 1)

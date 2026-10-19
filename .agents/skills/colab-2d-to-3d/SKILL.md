@@ -118,6 +118,26 @@ python3 scripts/render_turntable.py \
   --turntable
 ```
 
+#### Dedicated 360° Showcase MP4 Generator (`scripts/generate_turntable_mp4.py`)
+To generate commercial studio-quality 360° turntable showcase videos (720x720 / 1080x1080, 24fps, H.264, with glossy ground reflections and seamless cyclorama backdrops matching Tripo Studio style):
+
+```bash
+# Standard 720x720 24fps 4s studio dark turntable with floor reflection
+python3 scripts/generate_turntable_mp4.py \
+  --glb godot_project/assets/models/<prefix>.glb \
+  -o <path/to/showcase.mp4> \
+  --res 720x720 \
+  --fps 24 \
+  --duration 4.0 \
+  --preset studio_dark
+
+# Clay sculpt turntable
+python3 scripts/generate_turntable_mp4.py \
+  --glb godot_project/assets/models/<prefix>.glb \
+  --mode clay \
+  -o <path/to/showcase_clay.mp4>
+```
+
 --------------------------------------------------------------------------------
 
 ## 2D Multi-View Reference Sheet Prompt Template

@@ -41,6 +41,7 @@ Blender Headless (CPU) ──> 自動 Smart UV 展開 + 3D BVHTree 射線自遮�
 │   ├── runner.py                 # 管理 Colab 會話、單一 Session 熱啟動批次佇列 (--batch-prefixes) 與下載
 │   ├── bake_multiview_textures.py # 【核心】Blender 3D BVHTree 自遮擋剔除、拉普拉斯諧波補洞與 Cycles AO/PBR 烘焙
 │   ├── render_turntable.py       # Blender Headless 四視角對比圖 (帶貼圖/白模) 與 360° 旋轉 MP4 驗收腳本
+│   ├── generate_turntable_mp4.py # 【展示】專門渲染 360° 旋轉展示 MP4 影片工具 (支援暗色地面反射棚與自訂規格)
 │   └── optimize_glb.py           # 備用網格平滑與 Godot 場景輔助工具
 ├── assets/
 │   ├── Hunyuan3D_2_Colab.ipynb   # 遠端無人值守推論 Notebook (內建 DINOv2 與 Flood-Fill 去背補丁)
