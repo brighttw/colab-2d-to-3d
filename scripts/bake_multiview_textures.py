@@ -83,6 +83,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sharpen-blending", action="store_true", default=True, help="啟用非線性權重指數銳化，消除多視角毛髮重影 (預設開啟)")
     parser.add_argument("--no-sharpen-blending", action="store_false", dest="sharpen_blending", help="停用權重銳化")
     parser.add_argument("--update-godot", action="store_true", default=True, help="自動觸發 Godot 4 headless 重新匯入")
+    parser.add_argument("--verify", action="store_true", default=True, help="烘焙後自動執行閉環差分質檢 (預設開啟)")
+    parser.add_argument("--no-verify", action="store_false", dest="verify", help="停用閉環差分質檢")
+    parser.add_argument("--diff-report", type=str, default=None, help="自訂差分質檢報告輸出 PNG 路徑")
     return parser.parse_args(argv)
 
 
@@ -933,6 +936,43 @@ def main() -> None:
                 stderr=subprocess.DEVNULL,
             )
             print("✅ Godot 4 重新匯入完成！")
+
+    if args.verify:
+        verify_script = Path(__file__).resolve().parent / "verify_against_reference.py"
+        report_path = Path(args.diff_report) if args.diff_report else out_path.parent / f"{out_path.stem}_diff_report.png"
+        print(f"\n🔍 自動啟動閉環差分質檢 (Closed-Loop Reference Diff QA)...", flush=True)
+        try:
+            # 調用 verify_against_reference 模組進行驗證
+            blender_candidates = [
+                shutil.which("blender"),
+                "/opt/homebrew/bin/blender",
+                "/Applications/Blender.app/Contents/MacOS/Blender",
+                "/usr/local/bin/blender",
+            ]
+            blender_bin = next((p for p in blender_candidates if p and os.path.isfile(p) and os.access(p, os.X_OK)), None)
+            verify_cmd = [
+                blender_bin if blender_bin else sys.executable,
+                "-b", "-noaudio", "--python", str(verify_script),
+                "--",
+                "--glb", str(out_path),
+                "--front", str(front_path),
+                "--back", str(back_path),
+                "--side", str(side_path),
+                "-o", str(report_path),
+                "--res", "1024",
+            ] if blender_bin else [
+                sys.executable,
+                str(verify_script),
+                "--glb", str(out_path),
+                "--front", str(front_path),
+                "--back", str(back_path),
+                "--side", str(side_path),
+                "-o", str(report_path),
+                "--res", "1024",
+            ]
+            subprocess.run(verify_cmd, check=False)
+        except Exception as exc:
+            print(f"⚠️ 質檢執行發生非致命異常: {exc}")
 
 
 if __name__ == "__main__":

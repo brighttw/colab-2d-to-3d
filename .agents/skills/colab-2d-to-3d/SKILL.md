@@ -99,9 +99,11 @@ Takes the raw cloud geometry (`<prefix>.orig.glb`) and the three `1024x1024` vie
    - **`handpainted`**: Tabletop miniature RPG asset (`Roughness=0.98, Metallic=0.0, Specular=0.02, AO=0.04, Clamp=0.88`).
    - **`mecha`**: Armored sci-fi metal mech (`Roughness=0.28, Metallic=0.85, Specular=0.60, AO=0.48, Clamp=0.22`).
    - **`clay`**: Stop-motion claymation plasticine (`Roughness=0.92, Metallic=0.0, Specular=0.10, AO=0.45, Clamp=0.28`).
+5. **Closed-Loop Reference Diff QA (Default `--verify`)**:
+   Automatically triggers `scripts/verify_against_reference.py` at the end of baking to compare orthographic 3D renders against the 2D reference sheets, generating `<prefix>_diff_report.png` and `<prefix>_diff_report.json`.
 
 ```bash
-# Standard baking with default Pop Mart vinyl style
+# Standard baking with default Pop Mart vinyl style & automatic QA Diff Verification
 python3 scripts/bake_multiview_textures.py \
   --mesh godot_project/assets/models/<prefix>.orig.glb \
   --front assets/inputs/<prefix>_front.png \
@@ -122,7 +124,28 @@ python3 scripts/bake_multiview_textures.py \
 
 ---
 
-### Stage 4: Visual Verification & 360° Turntable Rendering (`scripts/render_turntable.py`)
+### Stage 4: Closed-Loop Reference Diff QA Engine (`scripts/verify_against_reference.py`)
+
+A quantitative quality-assurance engine that eliminates open-loop manual inspection by comparing rendered 3D unlit passes against the 2D concept inputs:
+- **Pixel-Wise Discrepancy Heatmap**: Computes $L1$ and SSIM differences across Front, Side, and Back orthographic passes.
+- **Hue Bleed Anomaly Detector**: Detects high-saturation color contamination on desaturated surfaces (e.g. pink inner-ear skin bleeding onto gray ear backs).
+- **Self-Occlusion Black Hole Detector**: Detects ray-cast shadows or facial geometry occlusions (e.g. whiskers causing cheek dark spots).
+- **Composite QA Report (`*_diff_report.png`)**: Produces a 3x3 high-resolution diagnostic image showing 2D Reference vs 3D Render vs Error Heatmap.
+
+```bash
+# Run standalone QA verification on any existing model
+python3 scripts/verify_against_reference.py \
+  --glb godot_project/assets/models/<prefix>.glb \
+  --front assets/inputs/<prefix>_front.png \
+  --side assets/inputs/<prefix>_side.png \
+  --back assets/inputs/<prefix>_back.png \
+  -o godot_project/assets/models/<prefix>_diff_report.png \
+  --res 1024
+```
+
+---
+
+### Stage 5: Visual Verification & 360° Turntable Rendering (`scripts/render_turntable.py`)
 
 Always render and visually inspect the 4-view comparison strips (`render_<prefix>_textured.png` and `render_<prefix>_clay.png`) and optionally a 360° turntable video (`turntable_<prefix>.mp4`):
 
