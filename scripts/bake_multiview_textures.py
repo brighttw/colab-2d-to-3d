@@ -149,11 +149,11 @@ def load_view_and_distance_field(path: Path) -> tuple[np.ndarray, np.ndarray, tu
         if step >= 3:
             dist[curr] = (step - 2) / float(max_erode - 2)
 
-    # 將前景內縮 2px 後向外擴張填滿背景 (防止邊緣抗鋸齒白邊被採樣)
+    # 將前景內縮 2px 後向外擴張填滿背景 (以 48 次迭代徹底填滿外圍純白背景，防止邊緣抗鋸齒白邊被採樣)
     valid_color_mask = dist > 0.05
     dilated_px = px.copy()
     fill_mask = valid_color_mask.copy()
-    for _ in range(16):
+    for _ in range(48):
         unfilled = ~fill_mask
         if not unfilled.any():
             break
@@ -294,11 +294,20 @@ def main() -> None:
     px_b, dist_b, (ub_c, ub_w, vb_c, vb_h) = load_view_and_distance_field(back_path)
     px_s, dist_s, (us_c, us_w, vs_c, vs_h) = load_view_and_distance_field(side_path)
 
+    z_rel = (coords[:, 2] - z_min) / dz
+    y_rel = (coords[:, 1] - cy) / dy
+    x_rel = (coords[:, 0] - cx) / dx
+
     # 計算每個頂點在正、背、側視角的投影 UV
     u_f = uf_c + ((coords[:, 0] - cx) / dx) * uf_w
     v_f = vf_c + ((coords[:, 2] - cz) / dz) * vf_h
 
-    u_b = ub_c - ((coords[:, 0] - cx) / dx) * ub_w
+    # 背面投影：對臀部區域消除 2D 尾巴殘影 (若 x_rel < 0，採用右側無尾臀部投影色彩)
+    is_butt_tail_leak = (z_rel > 0.15) & (z_rel < 0.42) & (y_rel > 0.02) & (x_rel < -0.05) & (normals[:, 1] > 0.1)
+    coords_b_x = coords[:, 0].copy()
+    coords_b_x[is_butt_tail_leak] = cx + np.abs(coords[is_butt_tail_leak, 0] - cx)
+
+    u_b = ub_c - ((coords_b_x - cx) / dx) * ub_w
     v_b = vb_c + ((coords[:, 2] - cz) / dz) * vb_h
 
     u_s = us_c + ((coords[:, 1] - cy) / dy) * us_w
@@ -332,9 +341,13 @@ def main() -> None:
     for i, v in enumerate(bm.verts):
         origin = v.co + v.normal * ray_eps
         if v.normal.y < -0.05:
-            hit, _, _, _ = bvh.ray_cast(origin, dir_front, 10.0)
-            if hit is None:
+            # 頭部/面部在正面絕對不會被身體自遮擋 (杜絕被 3D 胡鬚阻擋導致的臉頰黑洞破綻)
+            if z_rel[i] > 0.45 and y_rel[i] < 0.0:
                 vis_f[i] = 1.0
+            else:
+                hit, _, _, _ = bvh.ray_cast(origin, dir_front, 10.0)
+                if hit is None:
+                    vis_f[i] = 1.0
         if v.normal.y > 0.05:
             hit, _, _, _ = bvh.ray_cast(origin, dir_back, 10.0)
             if hit is None:
@@ -349,21 +362,18 @@ def main() -> None:
                 vis_r[i] = 1.0
 
     # 計算各視角法線入射角權重 (Grazing-Angle Suppression: cos(theta) < 0.25 平滑歸零)
-    ang_f = np.clip((-normals[:, 1] - 0.12) / 0.55, 0.0, 1.0) ** 1.5
-    ang_b = np.clip((normals[:, 1] - 0.12) / 0.55, 0.0, 1.0) ** 1.5
-    ang_l = np.clip((-normals[:, 0] - 0.32) / 0.50, 0.0, 1.0) ** 1.8
-    ang_r = np.clip((normals[:, 0] - 0.32) / 0.50, 0.0, 1.0) ** 1.8
+    ang_f = np.clip((-normals[:, 1] - 0.12) / 0.55, 0.0, 1.0) ** 1.3
+    ang_b = np.clip((normals[:, 1] - 0.12) / 0.55, 0.0, 1.0) ** 1.3
+    ang_l = np.clip((-normals[:, 0] - 0.32) / 0.50, 0.0, 1.0) ** 1.6
+    ang_r = np.clip((normals[:, 0] - 0.32) / 0.50, 0.0, 1.0) ** 1.6
 
-    # 正面權重予以 2.2 倍優先權以完美保護五官、腮紅與肚皮邊界
-    w_f = 2.2 * vis_f * ang_f * (sil_f ** 1.2)
-    w_b = 1.8 * vis_b * ang_b * (sil_b ** 1.2)
-    w_s = 0.85 * (vis_l * ang_l + vis_r * ang_r) * (sil_s ** 1.5)
+    # 正面權重予以 2.4 倍優先權以完美保護五官、腮紅與肚皮邊界
+    w_f = 2.4 * vis_f * ang_f * (sil_f ** 1.0)
+    w_b = 1.8 * vis_b * ang_b * (sil_b ** 1.0)
+    w_s = 0.95 * (vis_l * ang_l + vis_r * ang_r) * (sil_s ** 1.3)
 
     # 在側視圖中，角色下垂的手臂/翅膀通常畫在軀幹中段偏前側 (z_rel 介於 0.18~0.56、y_rel < 0.15)
     # 抑制該區域軀幹側面的側視圖權重，改由正背面與拉普拉斯諧波平滑過渡，徹底消除側腹「假手臂/假黑翅」投影印記
-    z_rel = (coords[:, 2] - z_min) / dz
-    y_rel = (coords[:, 1] - cy) / dy
-    x_rel = (coords[:, 0] - cx) / dx
     side_arm_shadow = (z_rel > 0.18) & (z_rel < 0.56) & (y_rel < 0.15)
     w_s[side_arm_shadow] = 0.0
 
@@ -394,6 +404,35 @@ def main() -> None:
         w_b[is_tail] = 0.0
         w_s[is_tail] = 0.0
 
+    # 3D 鬍鬚/薄面特徵辨識：突出臉頰薄片
+    is_whisker = (np.abs(x_rel) > 0.16) & (y_rel < -0.22) & (z_rel > 0.52) & (z_rel < 0.68)
+
+    # 眼睛辨識 (用於高光與低粗糙度)
+    is_eye = (np.abs(x_rel) > 0.08) & (np.abs(x_rel) < 0.24) & (z_rel > 0.60) & (z_rel < 0.74) & (y_rel < -0.12) & (normals[:, 1] < -0.2)
+
+    # 鼻頭辨識
+    is_nose = (np.abs(x_rel) < 0.06) & (z_rel > 0.58) & (z_rel < 0.64) & (y_rel < -0.22)
+
+    # 耳朵區域幾何嚴格分區 (徹底杜絕側面圖與正面粉紅內耳滲漏至耳背與外緣)
+    is_ear = (z_rel > 0.70) & (np.abs(x_rel) > 0.08)
+    if is_ear.any():
+        # 1. 側面圖在 2D 壓平時內耳粉紅容易重疊外緣，全耳禁止側面圖投影
+        w_s[is_ear] = 0.0
+
+        # 2. 幾何判別真正的內耳耳窩 (凹面朝前偏內: x_rel<0 時 norm_x>-0.32 且 norm_y<-0.15; x_rel>0 時 norm_x<0.32 且 norm_y<-0.15)
+        inner_l = (x_rel < -0.08) & (normals[:, 0] > -0.32) & (normals[:, 1] < -0.15) & is_ear
+        inner_r = (x_rel > 0.08) & (normals[:, 0] < 0.32) & (normals[:, 1] < -0.15) & is_ear
+        is_inner_ear = inner_l | inner_r
+        is_outer_ear = is_ear & ~is_inner_ear
+
+        # 內耳耳窩由正面圖投影粉紅耳窩
+        w_b[is_inner_ear] = 0.0
+        w_f[is_inner_ear] = np.maximum(w_f[is_inner_ear], 2.5)
+
+        # 耳背、外緣輪廓與頂端 (is_outer_ear)：絕對禁止正面投影 (根絕正面粉紅外溢)，鎖定由背面灰毛覆蓋
+        w_f[is_outer_ear] = 0.0
+        w_b[is_outer_ear] = np.maximum(w_b[is_outer_ear], 2.4)
+
     # 抑制小腿後側/雙腿內側鄰近胯下純白背景處的背面投影溢色
     # 若背面法向朝後 (normals[:, 1] > 0.1) 但投影極靠近輪廓外緣 (sil_b < 0.25)，將背面權重歸零，交由周圍腿部諧波自然過渡
     inner_leg_leak = (z_rel < 0.35) & (y_rel < 0.06) & (normals[:, 1] > 0.1) & (sil_b < 0.25)
@@ -401,12 +440,12 @@ def main() -> None:
     w_f[inner_leg_leak] = 0.0
 
     w_sum = w_f + w_b + w_s
-    confidence = np.clip(w_sum / 0.65, 0.0, 1.0)
+    confidence = np.clip(w_sum / 0.60, 0.0, 1.0)
 
     # 非線性指數銳化權重分配 (Winner-Takes-Most Sharpening):
-    # 杜絕多視角高頻毛束筆觸在交界處 (例如斜 45 度角) 因線性疊加而產生的雙重視影 (Ghosting) 與毛邊模糊
+    # p=2.6 消除毛髮重影且避免三角面切角鋸齒 (Faceting)
     if args.sharpen_blending:
-        p_exp = 5.0 if is_fur else 3.0
+        p_exp = 2.6 if is_fur else 3.0
         w_f_p = w_f ** p_exp
         w_b_p = w_b ** p_exp
         w_s_p = w_s ** p_exp
@@ -427,9 +466,17 @@ def main() -> None:
     fallback_col = front_base_col * (1.0 - fallback_fb) + back_base_col * fallback_fb
     v_color = direct_color * confidence[:, None] + fallback_col * (1.0 - confidence[:, None])
 
+    # 尾巴精修紋理：採樣背部與側身的高解析深灰毛皮材質，並賦予沿尾巴生長方向的柔和漸層與微紋理
     if is_tail.any():
-        # 鎖定尾巴為背部純淨毛色
-        v_color[is_tail] = back_base_col
+        tail_z = z_rel[is_tail]
+        tail_y = y_rel[is_tail]
+        tail_curve = np.sin(tail_z * 18.0 + tail_y * 12.0) * 0.04
+        tail_color_gradient = back_base_col * (0.92 + tail_curve[:, None])
+        v_color[is_tail] = np.clip(tail_color_gradient, 0.0, 1.0)
+
+    # 3D 鬍鬚精修：純白乾淨高光
+    if is_whisker.any():
+        v_color[is_whisker] = np.array([0.96, 0.96, 0.96], dtype=np.float32)
 
     # ============================================================
     # 步驟 2: 3D 網格拉普拉斯諧波修補 (Mesh Harmonic Inpainting)
@@ -449,10 +496,21 @@ def main() -> None:
     deg = np.maximum(deg, 1.0)[:, None]
 
     anchor_color = direct_color.copy()
-    anchor_weight = (confidence ** 1.5)[:, None]
+    anchor_weight = (confidence ** 1.3)[:, None]
     if is_tail.any():
-        anchor_color[is_tail] = back_base_col
+        anchor_color[is_tail] = v_color[is_tail]
         anchor_weight[is_tail] = 1.0
+    if is_whisker.any():
+        anchor_color[is_whisker] = np.array([0.96, 0.96, 0.96], dtype=np.float32)
+        anchor_weight[is_whisker] = 1.0
+
+    # 嚴格校驗耳朵外緣與耳背色彩：若有任何粉紅色相 (R > 0.36 且 R > 1.15 * G)，強制替換為背部純淨灰毛
+    if is_ear.any():
+        is_leaked_pink = is_outer_ear & (v_color[:, 0] > 0.36) & (v_color[:, 0] > v_color[:, 1] * 1.15)
+        if is_leaked_pink.any():
+            v_color[is_leaked_pink] = back_base_col
+            anchor_color[is_leaked_pink] = back_base_col
+            anchor_weight[is_leaked_pink] = 1.0
 
     for _ in range(36):
         nb_sum = np.zeros_like(v_color)
@@ -470,6 +528,16 @@ def main() -> None:
     norm_wf = (w_f / np.maximum(w_sum, 1e-5)) * confidence
     norm_wb = (w_b / np.maximum(w_sum, 1e-5)) * confidence
     norm_ws = (w_s / np.maximum(w_sum, 1e-5)) * confidence
+
+    # 針對耳朵正背面進行 Shader 權重嚴格隔離，杜絕任何視角重疊滲色
+    if is_ear.any():
+        norm_wf[is_outer_ear] = 0.0
+        norm_ws[is_outer_ear] = 0.0
+        norm_wb[is_outer_ear] = 1.0
+
+        norm_wb[is_inner_ear] = 0.0
+        norm_ws[is_inner_ear] = 0.0
+        norm_wf[is_inner_ear] = 1.0
 
     for face in bm.faces:
         for loop in face.loops:
@@ -524,6 +592,7 @@ def main() -> None:
     bpy.context.scene.cycles.bake_type = "AO"
     bpy.context.scene.cycles.samples = 16
     bpy.context.scene.render.bake.margin = 6
+    bpy.context.scene.render.bake.max_ray_distance = 0.15 * max(dx, dy, dz)
     bpy.ops.object.bake(type="AO")
 
     # ============================================================
@@ -589,7 +658,7 @@ def main() -> None:
     map_ao = nodes.new("ShaderNodeMapRange")
     map_ao.inputs["From Min"].default_value = 0.0
     map_ao.inputs["From Max"].default_value = 1.0
-    map_ao.inputs["To Min"].default_value = max(float(style_cfg.ao_min_clamp), 1.0 - float(effective_ao_strength))
+    map_ao.inputs["To Min"].default_value = 0.65 if is_fur else max(float(style_cfg.ao_min_clamp), 1.0 - float(effective_ao_strength))
     map_ao.inputs["To Max"].default_value = 1.0
     map_ao.clamp = True
     links.new(ao_sample_node.outputs["Color"], map_ao.inputs["Value"])
@@ -597,7 +666,7 @@ def main() -> None:
     mix_ao = nodes.new("ShaderNodeMix")
     mix_ao.data_type = "RGBA"
     mix_ao.blend_type = "MULTIPLY"
-    mix_ao.inputs[0].default_value = 1.0
+    mix_ao.inputs[0].default_value = 0.75 if is_fur else 1.0
     links.new(mix3.outputs[2], mix_ao.inputs[6])
     links.new(map_ao.outputs["Result"], mix_ao.inputs[7])
 
@@ -703,11 +772,64 @@ def main() -> None:
         bpy.data.images.remove(height_img)
         bpy.data.materials.remove(norm_bake_mat)
 
+    # 烘焙分區粗糙度貼圖 (Roughness Map: 身體毛皮 0.95 vs 眼睛 0.12 / 鼻頭 0.22)
+    baked_rough_img = None
+    if is_fur and is_eye.any():
+        print(f"✨ 正在烘焙分區粗糙度貼圖 (眼睛高光/毛皮啞光)...")
+        bm_r = bmesh.new()
+        bm_r.from_mesh(mesh)
+        bm_r.verts.ensure_lookup_table()
+        rough_attr = bm_r.loops.layers.color.new("LoopRoughness")
+        for face in bm_r.faces:
+            for loop in face.loops:
+                vi = loop.vert.index
+                if is_eye[vi]:
+                    r_val = 0.12
+                elif is_nose[vi]:
+                    r_val = 0.22
+                else:
+                    r_val = float(effective_roughness)
+                loop[rough_attr] = (r_val, r_val, r_val, 1.0)
+        bm_r.to_mesh(mesh)
+        bm_r.free()
+
+        rough_mat = bpy.data.materials.new("BakeRoughMat")
+        rough_mat.use_nodes = True
+        r_nodes = rough_mat.node_tree.nodes
+        r_links = rough_mat.node_tree.links
+        r_nodes.clear()
+
+        vcol_r = r_nodes.new("ShaderNodeVertexColor")
+        vcol_r.layer_name = "LoopRoughness"
+        emit_r = r_nodes.new("ShaderNodeEmission")
+        r_links.new(vcol_r.outputs["Color"], emit_r.inputs["Color"])
+        out_r = r_nodes.new("ShaderNodeOutputMaterial")
+        r_links.new(emit_r.outputs["Emission"], out_r.inputs["Surface"])
+
+        baked_rough_img = bpy.data.images.new("BakedRoughTexture", width=args.texture_size, height=args.texture_size)
+        baked_rough_node = r_nodes.new("ShaderNodeTexImage")
+        baked_rough_node.image = baked_rough_img
+        r_nodes.active = baked_rough_node
+
+        mesh_obj.data.materials.clear()
+        mesh_obj.data.materials.append(rough_mat)
+        bpy.context.view_layer.objects.active = mesh_obj
+        mesh_obj.select_set(True)
+
+        bpy.context.scene.cycles.bake_type = "EMIT"
+        bpy.ops.object.bake(type="EMIT")
+
+        baked_rough_path = out_path.parent / f"{out_path.stem}_roughness.png"
+        baked_rough_img.filepath_raw = str(baked_rough_path)
+        baked_rough_img.file_format = "PNG"
+        baked_rough_img.save()
+        bpy.data.materials.remove(rough_mat)
+
     # 清理輔助層，僅保留主 UVMap
     for lay_name in ["UV_Front", "UV_Back", "UV_Side"]:
         if lay_name in mesh.uv_layers:
             mesh.uv_layers.remove(mesh.uv_layers[lay_name])
-    for attr_name in ["HarmonicColor", "ViewWeights"]:
+    for attr_name in ["HarmonicColor", "ViewWeights", "LoopRoughness"]:
         if attr_name in mesh.color_attributes:
             mesh.color_attributes.remove(mesh.color_attributes[attr_name])
 
@@ -720,7 +842,16 @@ def main() -> None:
 
     bsdf = pbr_nodes.new("ShaderNodeBsdfPrincipled")
     bsdf.inputs["Metallic"].default_value = float(style_cfg.metallic)
-    bsdf.inputs["Roughness"].default_value = float(effective_roughness)
+    if baked_rough_img is not None:
+        tex_rough = pbr_nodes.new("ShaderNodeTexImage")
+        tex_rough.image = baked_rough_img
+        tex_rough.image.colorspace_settings.name = "Non-Color"
+        uv_r = pbr_nodes.new("ShaderNodeUVMap")
+        uv_r.uv_map = orig_uv_name
+        pbr_links.new(uv_r.outputs["UV"], tex_rough.inputs["Vector"])
+        pbr_links.new(tex_rough.outputs["Color"], bsdf.inputs["Roughness"])
+    else:
+        bsdf.inputs["Roughness"].default_value = float(effective_roughness)
     if "Specular IOR Level" in bsdf.inputs:
         bsdf.inputs["Specular IOR Level"].default_value = float(style_cfg.specular_ior_level)
     elif "Specular" in bsdf.inputs:
