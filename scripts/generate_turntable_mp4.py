@@ -95,24 +95,37 @@ if bg_node:
 cyc_obj = None
 if preset in ("studio_dark", "studio_white"):
     bm = bmesh.new()
-    # 建立地面與後方平滑延展的立體無縫底幕
-    v1 = bm.verts.new((-8.0, -8.0, 0.0))
-    v2 = bm.verts.new(( 8.0, -8.0, 0.0))
-    v3 = bm.verts.new(( 8.0,  3.5, 0.0))
-    v4 = bm.verts.new((-8.0,  3.5, 0.0))
-    v5 = bm.verts.new(( 8.0,  7.0, 6.0))
-    v6 = bm.verts.new((-8.0,  7.0, 6.0))
-    bm.faces.new((v1, v2, v3, v4))
-    bm.faces.new((v4, v3, v5, v6))
+    # 建立模型立足處絕對水平 (Z=0.0) 的攝影棚無縫底幕，防止 Catmull-Clark 曲面形變淹沒腳部
+    pts = [(-10.0, 0.0), (-5.0, 0.0), (0.0, 0.0), (1.5, 0.0)]
+    r = 2.5
+    cy = 1.5
+    cz = 2.5
+    for step in range(1, 9):
+        theta = (math.pi / 2.0) * (step / 8.0)
+        py = cy + r * math.sin(theta)
+        pz = cz - r * math.cos(theta)
+        pts.append((py, pz))
+    pts.append((cy + r, 8.0))
+
+    xs = [-10.0, -5.0, 0.0, 5.0, 10.0]
+    grid = []
+    for x in xs:
+        col = []
+        for y, z in pts:
+            v = bm.verts.new((x, y, z))
+            col.append(v)
+        grid.append(col)
+
+    for i in range(len(xs) - 1):
+        for j in range(len(pts) - 1):
+            bm.faces.new((grid[i][j], grid[i+1][j], grid[i+1][j+1], grid[i][j+1]))
+
     mesh = bpy.data.meshes.new("CycMesh")
     bm.to_mesh(mesh)
     bm.free()
 
     cyc_obj = bpy.data.objects.new("Cyclorama", mesh)
     scene.collection.objects.link(cyc_obj)
-    sub = cyc_obj.modifiers.new("Subsurf", 'SUBSURF')
-    sub.levels = 3
-    sub.render_levels = 3
 
     cmat = bpy.data.materials.new("CycMat")
     cmat.use_nodes = True
@@ -173,8 +186,8 @@ for obj in list(scene.objects):
         obj.parent = root
 
 root.scale = (scale, scale, scale)
-# 確保腳底緊貼 Z=0，水平置中於 (0, 0)
-root.location = Vector((-center.x * scale, -center.y * scale, -min_v.z * scale))
+# 確保腳底緊貼 Z=0，水平置中於 (0, 0)，微幅抬升 0.002 杜絕深度爭奪
+root.location = Vector((-center.x * scale, -center.y * scale, -min_v.z * scale + 0.002))
 
 # 6. 若為白模 (Clay) 模式，統一上啞光黏土材質
 if mode == "clay":

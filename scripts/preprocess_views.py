@@ -117,15 +117,25 @@ def _dilate_mask(mask: np.ndarray, radius: int = 4) -> np.ndarray:
     return out
 
 
-def _find_exterior_background(rgb: np.ndarray, luma_thresh: float = 0.965, sat_thresh: float = 0.03) -> np.ndarray:
+def _find_exterior_background(
+    rgb: np.ndarray,
+    luma_thresh: float = 0.965,
+    sat_thresh: float = 0.035,
+    clean_shadow: bool = False,
+) -> np.ndarray:
     """
     從影像四條外邊界向內執行 Flood-Fill，僅標記與外部相連的純白背景像素。
     角色內部被輪廓包圍的雪白肚皮、眼白與高光點絕對不會被標記為背景。
+    若 clean_shadow=True，亦將影像底部與背景相連的無彩色地面投影陰影納入背景清除。
     """
     h, w, _ = rgb.shape
     luma = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
     sat = rgb.max(axis=2) - rgb.min(axis=2)
     is_white = (luma > luma_thresh) & (sat < sat_thresh)
+
+    if clean_shadow:
+        is_shadow = (np.arange(h)[:, None] > int(h * 0.72)) & (sat < 0.04) & (luma > 0.40)
+        is_white = is_white | is_shadow
 
     # 在 1/2 降採樣網格上快速 Flood-Fill 外部背景
     sh, sw = h // 2, w // 2
@@ -160,14 +170,14 @@ def _find_exterior_background(rgb: np.ndarray, luma_thresh: float = 0.965, sat_t
     return ext_full
 
 
-def split_three_view_sheet(sheet_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def split_three_view_sheet(sheet_rgb: np.ndarray, clean_shadow: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     透過「外部背景 Flood-Fill 實心前景」+「2D 連通分量分析」分離正、側、背三個視角：
     - 角色內部的白肚皮與眼白 100% 保持實心連通，不產生任何破洞或過曝斑塊。
     - 即使 A-Pose 張開的手臂與鄰近視角的長尾在 X 軸範圍重疊，也能依連通塊完美分離而不截斷任何肢體。
     """
     h, w, _ = sheet_rgb.shape
-    ext_bg = _find_exterior_background(sheet_rgb, luma_thresh=0.965, sat_thresh=0.035)
+    ext_bg = _find_exterior_background(sheet_rgb, luma_thresh=0.965, sat_thresh=0.035, clean_shadow=clean_shadow)
     fg = ~ext_bg
 
     # 在 1/2 降採樣網格上快速搜尋實心前景連通分量
@@ -254,7 +264,7 @@ def split_three_view_sheet(sheet_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarra
 def clean_background_lines_and_ground_shadow(rgb: np.ndarray, clean_shadow: bool = False) -> np.ndarray:
     """僅將與外邊界連通的外部背景像素正規化為純白 1.0，100% 保留角色內部的原始漸層與白肚皮。"""
     out = rgb.copy()
-    ext_bg = _find_exterior_background(out, luma_thresh=0.965, sat_thresh=0.035)
+    ext_bg = _find_exterior_background(out, luma_thresh=0.965, sat_thresh=0.035, clean_shadow=clean_shadow)
     out[ext_bg] = 1.0
     return out
 
@@ -452,7 +462,7 @@ def main() -> None:
             sys.exit(1)
         print(f"🔪 [1/4] 正在從三視圖總表透過連通分量分離正/側/背視圖: {sheet_path}")
         sheet_rgb = load_image_topdown(sheet_path)
-        front_rgb, side_rgb, back_rgb = split_three_view_sheet(sheet_rgb)
+        front_rgb, side_rgb, back_rgb = split_three_view_sheet(sheet_rgb, clean_shadow=args.clean_ground_shadow)
     elif args.front and args.side and args.back:
         print("📂 [1/4] 正在讀取正/側/背三視圖檔案...")
         front_rgb = load_image_topdown(Path(args.front))
