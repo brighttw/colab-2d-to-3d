@@ -42,8 +42,8 @@ This document details the architecture of the upgraded `colab-2d-to-3d` pipeline
           ├──> 3D BVHTree Ray-Cast Self-Occlusion Rejection (vis_f, vis_b, vis_l, vis_r)
           ├──> Side-Arm / Flipper Torso Shadow Suppression (eliminates phantom limb stamps on belly)
           ├──> 36-Step Mesh Graph Laplacian Harmonic Inpainting (fills quill grooves & underarms)
-          ├──> Cycles 2048x2048 Geometric AO Baking + Multi-View High-Res Shader Bake
-          └──> Exports <prefix>.glb (Roughness=0.68, Specular IOR=0.22) + Headless Godot 4 Reimport
+          ├──> Cycles 2048x2048 Geometric AO Baking with Style-Specific Shadow Tuning
+          └──> Exports <prefix>.glb with Style PBR (Roughness, Metallic, Specular) + Headless Godot 4 Reimport
           │
           ▼
 [Stage 4: Automated Verification (scripts/render_turntable.py)]
@@ -61,3 +61,5 @@ This document details the architecture of the upgraded `colab-2d-to-3d` pipeline
    - Default `u2net` background removal misclassifies bright white bellies (such as a penguin's white stomach) as background, carving holes in the 3D conditioning mask. Border-connected flood-fill preserves 100% of internal bright regions.
 3. **Why Use 3D `BVHTree` + Mesh Graph Laplacian Harmonic Diffusion?**
    - Simple normal-based tri-planar blending projects A-pose arms onto the side of the torso and projects front belly colors onto the tips of back quills. Ray-casting against the 3D `BVHTree` rejects self-occluded rays, while 36 iterations of Graph Laplacian diffusion smoothly interpolate colors across occluded creases.
+4. **Why Centralize Multi-Style Presets (`scripts/styles.py`)?**
+   - Different visual genres require different 2D prompt vocabularies and 3D PBR material characteristics. For example, anime figures require high shadow clamp thresholds (to avoid muddy AO in skin creases) and moderate gloss, while glossy ceramics require low roughness and high specular IOR, and hand-painted RPG models require near-zero specular and unlit diffuse behavior. Centralizing this matrix in `scripts/styles.py` guarantees that 2D turnaround generation, Blender baking, and Godot 4 import remain perfectly aligned.

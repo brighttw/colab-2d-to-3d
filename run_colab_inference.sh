@@ -20,6 +20,8 @@ usage() {
   --session NAME         指定或重用 Colab 會話名稱
   --keep-session         推論完成後保持會話運行 (預設自動停止以節省點數)
   --timeout SECONDS      執行逾時上限秒數 (預設: 3600)
+  --style STYLE          材質風格: popmart (預設), anime, ceramic, handpainted, mecha, clay
+  --auto-bake            推論完成後自動呼叫本機 Blender 執行遮擋感知 PBR 烘焙
   -h, --help             顯示本說明
 EOF
 }
@@ -37,6 +39,8 @@ GPU="L4"
 SESSION=""
 KEEP_SESSION=0
 TIMEOUT="3600"
+STYLE="popmart"
+AUTO_BAKE=0
 
 while (($#)); do
   case "$1" in
@@ -89,6 +93,15 @@ while (($#)); do
       TIMEOUT="$2"
       shift 2
       ;;
+    --style)
+      (($# >= 2)) || { echo "缺少參數: $1" >&2; usage >&2; exit 2; }
+      STYLE="$2"
+      shift 2
+      ;;
+    --auto-bake)
+      AUTO_BAKE=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -116,6 +129,7 @@ ARGS=(
   --faces "$FACES"
   --gpu "$GPU"
   --timeout "$TIMEOUT"
+  --style "$STYLE"
 )
 
 if [[ -n "$SESSION" ]]; then
@@ -123,6 +137,9 @@ if [[ -n "$SESSION" ]]; then
 fi
 if (( KEEP_SESSION )); then
   ARGS+=(--keep-session)
+fi
+if (( AUTO_BAKE )); then
+  ARGS+=(--auto-bake)
 fi
 
 exec python3 "$RUNNER" "${ARGS[@]}"

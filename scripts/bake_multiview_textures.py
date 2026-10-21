@@ -25,6 +25,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 確保 Blender 執行環境能夠匯入同目錄下的 styles 模組
+_scripts_dir = str(Path(__file__).resolve().parent)
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
+from styles import get_style, StyleConfig
+
 
 def _ensure_blender_runtime() -> None:
     try:
@@ -67,9 +73,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--back", required=True, help="背面 2D 參考圖")
     parser.add_argument("--side", required=True, help="側面 2D 參考圖")
     parser.add_argument("-o", "--output", required=True, help="輸出 GLB 路徑")
+    parser.add_argument("--style", "-s", default="popmart", help="材質風格 (預設: popmart，可選: popmart, anime, ceramic, handpainted, mecha, clay, fur)")
     parser.add_argument("--texture-size", type=int, default=2048, help="烘焙貼圖解析度 (預設: 2048)")
-    parser.add_argument("--ao-strength", type=float, default=0.32, help="AO 立體陰影融合強度 (預設: 0.32)")
-    parser.add_argument("--roughness", type=float, default=0.68, help="身體材質基礎粗糙度 (預設: 0.68)")
+    parser.add_argument("--ao-strength", type=float, default=None, help="AO 立體陰影融合強度 (預設依風格自適應)")
+    parser.add_argument("--roughness", type=float, default=None, help="身體材質基礎粗糙度 (預設依風格自適應)")
+    parser.add_argument("--bake-normal", action="store_true", default=True, help="自動計算高頻毛流並烘焙切線空間法線貼圖 (預設開啟)")
+    parser.add_argument("--no-bake-normal", action="store_false", dest="bake_normal", help="停用法線貼圖烘焙")
+    parser.add_argument("--normal-strength", type=float, default=None, help="法線起伏強度 (預設依風格自適應: fur 為 0.75，其他風格為 0.35)")
+    parser.add_argument("--sharpen-blending", action="store_true", default=True, help="啟用非線性權重指數銳化，消除多視角毛髮重影 (預設開啟)")
+    parser.add_argument("--no-sharpen-blending", action="store_false", dest="sharpen_blending", help="停用權重銳化")
     parser.add_argument("--update-godot", action="store_true", default=True, help="自動觸發 Godot 4 headless 重新匯入")
     return parser.parse_args(argv)
 
@@ -183,6 +195,12 @@ def sample_bilinear_array(arr: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.n
 
 def main() -> None:
     args = parse_args()
+    style_cfg = get_style(args.style)
+    is_fur = (style_cfg.id == "fur")
+    effective_roughness = float(args.roughness) if args.roughness is not None else float(style_cfg.roughness)
+    effective_ao_strength = float(args.ao_strength) if args.ao_strength is not None else float(style_cfg.ao_strength)
+    effective_normal_strength = float(args.normal_strength) if args.normal_strength is not None else (0.75 if is_fur else 0.35)
+
     mesh_path = Path(args.mesh).resolve()
     front_path = Path(args.front).resolve()
     back_path = Path(args.back).resolve()
@@ -194,6 +212,13 @@ def main() -> None:
     print(f"   幾何網格: {mesh_path.name}")
     print(f"   視角圖檔: 正面={front_path.name}, 背面={back_path.name}, 側面={side_path.name}")
     print(f"   目標輸出: {out_path}")
+    print(f"   🎨 套用風格: {style_cfg.name} (ID: {style_cfg.id})")
+    print(f"      - 粗糙度 (Roughness): {effective_roughness:.2f}{' (手動覆寫)' if args.roughness is not None else ''}")
+    print(f"      - 金屬度 (Metallic): {style_cfg.metallic:.2f}")
+    print(f"      - 高光強度 (Specular IOR Level): {style_cfg.specular_ior_level:.2f}")
+    print(f"      - AO 融合強度: {effective_ao_strength:.2f}{' (手動覆寫)' if args.ao_strength is not None else ''} (底限 Clamp: {style_cfg.ao_min_clamp:.2f})")
+    print(f"      - 法線烘焙 (Normal Map): {'開啟 (強度=' + str(effective_normal_strength) + ')' if args.bake_normal else '關閉'}")
+    print(f"      - 多視角防重影銳化 (Sharpen Blending): {'開啟' if args.sharpen_blending else '關閉'}")
     print("============================================================")
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -235,9 +260,10 @@ def main() -> None:
             mesh.uv_layers.new(name="UVMap")
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_all(action="SELECT")
-        bpy.ops.uv.smart_project(angle_limit=math.radians(66.0), island_margin=0.002)
+        bpy.ops.uv.smart_project(angle_limit=math.radians(52.0), island_margin=0.008)
+        bpy.ops.uv.pack_islands(margin=0.008)
         bpy.ops.object.mode_set(mode="OBJECT")
-        print("✅ Smart UV 展開完成！")
+        print("✅ Smart UV 展開完成！(角度閾值: 52.0° + Pack Islands)")
 
     orig_uv_name = mesh.uv_layers.active.name
 
@@ -337,6 +363,7 @@ def main() -> None:
     # 抑制該區域軀幹側面的側視圖權重，改由正背面與拉普拉斯諧波平滑過渡，徹底消除側腹「假手臂/假黑翅」投影印記
     z_rel = (coords[:, 2] - z_min) / dz
     y_rel = (coords[:, 1] - cy) / dy
+    x_rel = (coords[:, 0] - cx) / dx
     side_arm_shadow = (z_rel > 0.18) & (z_rel < 0.56) & (y_rel < 0.15)
     w_s[side_arm_shadow] = 0.0
 
@@ -346,17 +373,63 @@ def main() -> None:
     w_b[front_lock] = 0.0
     w_f[front_lock] = np.maximum(w_f[front_lock], 2.0)
 
+    # 提取可靠的主體底色 (用於修補未覆蓋區域與附屬肢體，杜絕採樣到背景純白)
+    back_upper_mask = (y_rel > 0.04) & (z_rel > 0.45) & (z_rel < 0.75) & (normals[:, 1] > 0.2) & (sil_b > 0.5)
+    if back_upper_mask.any():
+        back_base_col = np.median(col_b[back_upper_mask], axis=0)
+    else:
+        back_base_col = np.array([0.4, 0.4, 0.4], dtype=np.float32)
+
+    front_mask = (np.abs(x_rel) < 0.25) & (coords[:, 1] < cy) & (normals[:, 1] < -0.35) & (sil_f > 0.5)
+    if front_mask.any():
+        front_base_col = np.median(col_f[front_mask], axis=0)
+    else:
+        front_base_col = back_base_col.copy()
+
+    # 抑制後方附屬肢體 (尾巴: z_rel < 0.40 且 y_rel > 0.05 的後方突出部位，完整涵蓋尾根至彎曲尾尖)
+    is_tail = (z_rel < 0.40) & (y_rel > 0.05)
+    if is_tail.any():
+        # 尾巴不接受 2D 視角的直接投影 (因為 2D 背面視角常畫在單側，或被胯下純白背景/正面白肚皮穿透)
+        w_f[is_tail] = 0.0
+        w_b[is_tail] = 0.0
+        w_s[is_tail] = 0.0
+
+    # 抑制小腿後側/雙腿內側鄰近胯下純白背景處的背面投影溢色
+    # 若背面法向朝後 (normals[:, 1] > 0.1) 但投影極靠近輪廓外緣 (sil_b < 0.25)，將背面權重歸零，交由周圍腿部諧波自然過渡
+    inner_leg_leak = (z_rel < 0.35) & (y_rel < 0.06) & (normals[:, 1] > 0.1) & (sil_b < 0.25)
+    w_b[inner_leg_leak] = 0.0
+    w_f[inner_leg_leak] = 0.0
+
     w_sum = w_f + w_b + w_s
     confidence = np.clip(w_sum / 0.65, 0.0, 1.0)
+
+    # 非線性指數銳化權重分配 (Winner-Takes-Most Sharpening):
+    # 杜絕多視角高頻毛束筆觸在交界處 (例如斜 45 度角) 因線性疊加而產生的雙重視影 (Ghosting) 與毛邊模糊
+    if args.sharpen_blending:
+        p_exp = 5.0 if is_fur else 3.0
+        w_f_p = w_f ** p_exp
+        w_b_p = w_b ** p_exp
+        w_s_p = w_s ** p_exp
+        w_p_sum = w_f_p + w_b_p + w_s_p
+        mask_nz = w_p_sum > 1e-6
+        norm_factor = np.zeros_like(w_sum)
+        norm_factor[mask_nz] = w_sum[mask_nz] / w_p_sum[mask_nz]
+        w_f = w_f_p * norm_factor
+        w_b = w_b_p * norm_factor
+        w_s = w_s_p * norm_factor
 
     # 合成直接可見頂點色彩
     safe_sum = np.maximum(w_sum, 1e-6)[:, None]
     direct_color = (col_f * w_f[:, None] + col_b * w_b[:, None] + col_s * w_s[:, None]) / safe_sum
 
-    # 對於完全無直接視線的頂點，以法線方向正反面色彩作為初始種子
+    # 對於無直接視角覆蓋或被抑制的頂點，使用主體區域底色作為初始種子，徹底根除純白背景滲色
     fallback_fb = np.clip((normals[:, 1] + 0.1) / 0.2, 0.0, 1.0)[:, None]
-    fallback_col = col_f * (1.0 - fallback_fb) + col_b * fallback_fb
+    fallback_col = front_base_col * (1.0 - fallback_fb) + back_base_col * fallback_fb
     v_color = direct_color * confidence[:, None] + fallback_col * (1.0 - confidence[:, None])
+
+    if is_tail.any():
+        # 鎖定尾巴為背部純淨毛色
+        v_color[is_tail] = back_base_col
 
     # ============================================================
     # 步驟 2: 3D 網格拉普拉斯諧波修補 (Mesh Harmonic Inpainting)
@@ -377,6 +450,9 @@ def main() -> None:
 
     anchor_color = direct_color.copy()
     anchor_weight = (confidence ** 1.5)[:, None]
+    if is_tail.any():
+        anchor_color[is_tail] = back_base_col
+        anchor_weight[is_tail] = 1.0
 
     for _ in range(36):
         nb_sum = np.zeros_like(v_color)
@@ -447,7 +523,7 @@ def main() -> None:
     bpy.context.scene.cycles.device = "CPU"
     bpy.context.scene.cycles.bake_type = "AO"
     bpy.context.scene.cycles.samples = 16
-    bpy.context.scene.render.bake.margin = 16
+    bpy.context.scene.render.bake.margin = 6
     bpy.ops.object.bake(type="AO")
 
     # ============================================================
@@ -513,7 +589,7 @@ def main() -> None:
     map_ao = nodes.new("ShaderNodeMapRange")
     map_ao.inputs["From Min"].default_value = 0.0
     map_ao.inputs["From Max"].default_value = 1.0
-    map_ao.inputs["To Min"].default_value = max(0.35, 1.0 - float(args.ao_strength))
+    map_ao.inputs["To Min"].default_value = max(float(style_cfg.ao_min_clamp), 1.0 - float(effective_ao_strength))
     map_ao.inputs["To Max"].default_value = 1.0
     map_ao.clamp = True
     links.new(ao_sample_node.outputs["Color"], map_ao.inputs["Value"])
@@ -543,7 +619,7 @@ def main() -> None:
 
     bpy.context.scene.cycles.bake_type = "EMIT"
     bpy.context.scene.cycles.samples = 1
-    bpy.context.scene.render.bake.margin = 16
+    bpy.context.scene.render.bake.margin = 6
     bpy.ops.object.bake(type="EMIT")
 
     baked_tex_path = out_path.parent / f"{out_path.stem}_diffuse.png"
@@ -551,6 +627,81 @@ def main() -> None:
     baked_img.file_format = "PNG"
     baked_img.save()
     print(f"💾 已儲存無條紋烘焙貼圖至: {baked_tex_path}")
+
+    # ============================================================
+    # 步驟 5: 高頻毛流微細節與切線空間法線貼圖烘焙 (Fur Normal Map)
+    # ============================================================
+    baked_norm_img = None
+    if args.bake_normal:
+        print(f"🧶 [5/5] 正在計算高頻毛流微細節並烘焙 {args.texture_size}x{args.texture_size} 切線空間法線貼圖 (Tangent Normal)...")
+        w_tex, h_tex = baked_img.size
+        px_albedo = np.array(baked_img.pixels[:], dtype=np.float32).reshape(h_tex, w_tex, 4)[:, :, :3]
+        luma_tex = 0.299 * px_albedo[:, :, 0] + 0.587 * px_albedo[:, :, 1] + 0.114 * px_albedo[:, :, 2]
+
+        def fast_box_blur_2d(arr: np.ndarray, r: int = 6) -> np.ndarray:
+            p1 = np.pad(arr, ((0, 0), (r, r)), mode="edge")
+            c1 = np.cumsum(p1, axis=1)
+            b1 = (c1[:, 2 * r :] - c1[:, :-2 * r]) / (2 * r)
+            p0 = np.pad(b1, ((r, r), (0, 0)), mode="edge")
+            c0 = np.cumsum(p0, axis=0)
+            return (c0[2 * r :, :] - c0[:-2 * r, :]) / (2 * r)
+
+        blur_radius = 8 if is_fur else 6
+        low_freq = fast_box_blur_2d(fast_box_blur_2d(luma_tex, r=blur_radius), r=blur_radius)
+        high_pass = np.clip(luma_tex - low_freq + 0.5, 0.0, 1.0)
+
+        height_img = bpy.data.images.new("FurHeightMap", width=w_tex, height=h_tex)
+        height_rgba = np.ones((h_tex, w_tex, 4), dtype=np.float32)
+        height_rgba[:, :, 0] = high_pass
+        height_rgba[:, :, 1] = high_pass
+        height_rgba[:, :, 2] = high_pass
+        height_img.pixels[:] = height_rgba.flatten().tolist()
+
+        norm_bake_mat = bpy.data.materials.new("BakeNormalMat")
+        norm_bake_mat.use_nodes = True
+        n_nodes = norm_bake_mat.node_tree.nodes
+        n_links = norm_bake_mat.node_tree.links
+        n_nodes.clear()
+
+        bsdf_nb = n_nodes.new("ShaderNodeBsdfPrincipled")
+        h_tex_node = n_nodes.new("ShaderNodeTexImage")
+        h_tex_node.image = height_img
+        h_uv = n_nodes.new("ShaderNodeUVMap")
+        h_uv.uv_map = orig_uv_name
+        n_links.new(h_uv.outputs["UV"], h_tex_node.inputs["Vector"])
+
+        bump_nb = n_nodes.new("ShaderNodeBump")
+        bump_nb.inputs["Strength"].default_value = float(effective_normal_strength)
+        bump_nb.inputs["Distance"].default_value = 0.035 if is_fur else 0.02
+        n_links.new(h_tex_node.outputs["Color"], bump_nb.inputs["Height"])
+        n_links.new(bump_nb.outputs["Normal"], bsdf_nb.inputs["Normal"])
+
+        baked_norm_img = bpy.data.images.new("BakedNormalTexture", width=args.texture_size, height=args.texture_size)
+        baked_norm_node = n_nodes.new("ShaderNodeTexImage")
+        baked_norm_node.image = baked_norm_img
+        n_nodes.active = baked_norm_node
+
+        out_nb = n_nodes.new("ShaderNodeOutputMaterial")
+        n_links.new(bsdf_nb.outputs["BSDF"], out_nb.inputs["Surface"])
+
+        mesh_obj.data.materials.clear()
+        mesh_obj.data.materials.append(norm_bake_mat)
+        bpy.context.view_layer.objects.active = mesh_obj
+        mesh_obj.select_set(True)
+
+        bpy.context.scene.cycles.bake_type = "NORMAL"
+        bpy.context.scene.render.bake.normal_space = "TANGENT"
+        bpy.context.scene.render.bake.margin = 6
+        bpy.ops.object.bake(type="NORMAL")
+
+        baked_norm_path = out_path.parent / f"{out_path.stem}_normal.png"
+        baked_norm_img.filepath_raw = str(baked_norm_path)
+        baked_norm_img.file_format = "PNG"
+        baked_norm_img.save()
+        print(f"💾 已儲存切線空間法線貼圖至: {baked_norm_path}")
+
+        bpy.data.images.remove(height_img)
+        bpy.data.materials.remove(norm_bake_mat)
 
     # 清理輔助層，僅保留主 UVMap
     for lay_name in ["UV_Front", "UV_Back", "UV_Side"]:
@@ -560,22 +711,58 @@ def main() -> None:
         if attr_name in mesh.color_attributes:
             mesh.color_attributes.remove(mesh.color_attributes[attr_name])
 
-    # 建立符合 Godot 4 標準的柔光盲盒公仔 PBR 材質 (消除鏡面高光雜斑)
-    pbr_mat = bpy.data.materials.new(f"M_{out_path.stem}_PBR")
+    # 建立符合 Godot 4 標準的 PBR 材質
+    pbr_mat = bpy.data.materials.new(f"M_{out_path.stem}_{style_cfg.id}_PBR")
     pbr_mat.use_nodes = True
     pbr_nodes = pbr_mat.node_tree.nodes
     pbr_links = pbr_mat.node_tree.links
     pbr_nodes.clear()
 
     bsdf = pbr_nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.inputs["Metallic"].default_value = 0.0
-    bsdf.inputs["Roughness"].default_value = float(args.roughness)
+    bsdf.inputs["Metallic"].default_value = float(style_cfg.metallic)
+    bsdf.inputs["Roughness"].default_value = float(effective_roughness)
     if "Specular IOR Level" in bsdf.inputs:
-        bsdf.inputs["Specular IOR Level"].default_value = 0.22
+        bsdf.inputs["Specular IOR Level"].default_value = float(style_cfg.specular_ior_level)
+    elif "Specular" in bsdf.inputs:
+        bsdf.inputs["Specular"].default_value = float(style_cfg.specular_ior_level)
+
+    # 針對毛皮風格啟用 Sheen (絨毛邊緣背光散射)
+    if is_fur:
+        if "Sheen Weight" in bsdf.inputs:
+            bsdf.inputs["Sheen Weight"].default_value = 0.85
+        if "Sheen Roughness" in bsdf.inputs:
+            bsdf.inputs["Sheen Roughness"].default_value = 0.50
+
+    # 針對陶瓷/琺瑯樹脂風格套用清透面漆層 (Clearcoat / Coat)
+    if style_cfg.coat_weight > 0.0:
+        if "Coat Weight" in bsdf.inputs:
+            bsdf.inputs["Coat Weight"].default_value = float(style_cfg.coat_weight)
+            if "Coat Roughness" in bsdf.inputs:
+                bsdf.inputs["Coat Roughness"].default_value = float(style_cfg.coat_roughness)
+        elif "Clearcoat" in bsdf.inputs:
+            bsdf.inputs["Clearcoat"].default_value = float(style_cfg.coat_weight)
+            if "Clearcoat Roughness" in bsdf.inputs:
+                bsdf.inputs["Clearcoat Roughness"].default_value = float(style_cfg.coat_roughness)
 
     final_tex_node = pbr_nodes.new("ShaderNodeTexImage")
     final_tex_node.image = baked_img
     pbr_links.new(final_tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+
+    # 連接切線空間法線貼圖
+    if baked_norm_img is not None:
+        norm_map_node = pbr_nodes.new("ShaderNodeNormalMap")
+        norm_map_node.space = "TANGENT"
+        norm_map_node.inputs["Strength"].default_value = 1.0
+
+        norm_tex_node = pbr_nodes.new("ShaderNodeTexImage")
+        norm_tex_node.image = baked_norm_img
+        norm_tex_node.image.colorspace_settings.name = "Non-Color"
+
+        norm_uv = pbr_nodes.new("ShaderNodeUVMap")
+        norm_uv.uv_map = orig_uv_name
+        pbr_links.new(norm_uv.outputs["UV"], norm_tex_node.inputs["Vector"])
+        pbr_links.new(norm_tex_node.outputs["Color"], norm_map_node.inputs["Color"])
+        pbr_links.new(norm_map_node.outputs["Normal"], bsdf.inputs["Normal"])
 
     pbr_out = pbr_nodes.new("ShaderNodeOutputMaterial")
     pbr_links.new(bsdf.outputs["BSDF"], pbr_out.inputs["Surface"])

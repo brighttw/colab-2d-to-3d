@@ -92,9 +92,16 @@ Takes the raw cloud geometry (`<prefix>.orig.glb`) and the three `1024x1024` vie
 1. Automatically runs Blender `smart_project` UV unwrapping if the mesh has no UVs.
 2. Performs **3D `BVHTree` ray-cast self-occlusion rejection** (`vis_f, vis_b, vis_l, vis_r`) and **side-arm/flipper torso shadow suppression** (`side_arm_shadow`) so A-pose arms or side-view flippers never project phantom marks onto the ribcage/belly.
 3. Solves **36-step Mesh Graph Laplacian Harmonic Inpainting** (`HarmonicColor`) across occluded grooves (e.g., between hedgehog quills or under arms), eliminating lateral zebra striping.
-4. Bakes `2048x2048` Cycles geometric Ambient Occlusion (AO) and exports a Godot 4 `.glb` with velvety blind-box vinyl PBR settings (`Roughness = 0.68`, `Specular IOR Level = 0.22`).
+4. Bakes `2048x2048` Cycles geometric Ambient Occlusion (AO) with style-specific shadow curves, and exports a Godot 4 `.glb` using the specified PBR material style (`--style`):
+   - **`popmart` (Default)**: Matte vinyl toy (`Roughness=0.66, Metallic=0.0, Specular=0.22, AO=0.32, Clamp=0.35`).
+   - **`anime`**: Anime PVC figurine (`Roughness=0.40, Metallic=0.0, Specular=0.38, AO=0.12, Clamp=0.65`).
+   - **`ceramic`**: Glossy glazed ceramic/resin with Clearcoat (`Roughness=0.10, Metallic=0.0, Specular=0.85, Coat=1.0, AO=0.22, Clamp=0.45`).
+   - **`handpainted`**: Tabletop miniature RPG asset (`Roughness=0.98, Metallic=0.0, Specular=0.02, AO=0.04, Clamp=0.88`).
+   - **`mecha`**: Armored sci-fi metal mech (`Roughness=0.28, Metallic=0.85, Specular=0.60, AO=0.48, Clamp=0.22`).
+   - **`clay`**: Stop-motion claymation plasticine (`Roughness=0.92, Metallic=0.0, Specular=0.10, AO=0.45, Clamp=0.28`).
 
 ```bash
+# Standard baking with default Pop Mart vinyl style
 python3 scripts/bake_multiview_textures.py \
   --mesh godot_project/assets/models/<prefix>.orig.glb \
   --front assets/inputs/<prefix>_front.png \
@@ -102,6 +109,15 @@ python3 scripts/bake_multiview_textures.py \
   --back assets/inputs/<prefix>_back.png \
   -o godot_project/assets/models/<prefix>.glb \
   --texture-size 2048
+
+# Baking with custom style (e.g. ceramic, anime, mecha) and optional manual overrides
+python3 scripts/bake_multiview_textures.py \
+  --mesh godot_project/assets/models/<prefix>.orig.glb \
+  --front assets/inputs/<prefix>_front.png \
+  --side assets/inputs/<prefix>_side.png \
+  --back assets/inputs/<prefix>_back.png \
+  -o godot_project/assets/models/<prefix>.glb \
+  --style ceramic
 ```
 
 ---
@@ -140,12 +156,24 @@ python3 scripts/generate_turntable_mp4.py \
 
 --------------------------------------------------------------------------------
 
-## 2D Multi-View Reference Sheet Prompt Template
+## 2D Multi-View Reference Sheet Prompt Templates & Generator (`scripts/styles.py`)
 
-When the user asks for prompts to generate 2D multi-view character sheets for this pipeline, enforce these constraints:
+Use the built-in style CLI to list styles or instantly generate 21:9 turnaround sheet prompts for any subject:
+
+```bash
+# List all 6 styles and PBR matrices
+python3 scripts/styles.py list
+
+# Generate 21:9 prompt for a specific style (e.g. anime, ceramic, mecha)
+python3 scripts/styles.py prompt --style anime --subject "cute fox adventurer"
+python3 scripts/styles.py prompt --style ceramic --subject "porcelain sleeping cat"
+python3 scripts/styles.py prompt --style mecha --subject "tactical cybernetic bear"
+```
+
+### Global Sheet Layout & Background Rules:
 - **Layout**: `horizontal 21:9 aspect ratio`, three full-body orthographic views in a single row: **Left = Front view (A-pose)**, **Middle = Left Side profile view (facing left)**, **Right = Back view (A-pose)**.
-- **Background**: `Pure solid flat white background (#FFFFFF), no ground shadow, no floor line, no text, no labels, generous white margin between the three views so they never touch or overlap`.
-- **Style**: `3D blind-box vinyl toy render style, Pop Mart / Nintendo amiibo aesthetic, soft global illumination, matte clay/vinyl material, strictly aligned head-to-toe heights across all three views`.
+- **Background**: `Pure solid flat white background (#FFFFFF), no ground shadow, no floor line, no pedestal, no text, no labels, generous white margin between the three views so they never touch or overlap`.
+- **Align**: `Strictly aligned head-to-toe heights across all three views`.
 
 --------------------------------------------------------------------------------
 

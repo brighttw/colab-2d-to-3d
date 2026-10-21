@@ -288,6 +288,8 @@ def run_batch_prefixes(
     session: Optional[str] = None,
     keep_session: bool = False,
     timeout: float = 3600,
+    auto_bake: bool = False,
+    style: str = "popmart",
 ) -> list[str]:
     """
     在單一 Colab 會話中執行多模型「1 次冷啟動 + N-1 次熱啟動」批次推論，
@@ -306,7 +308,7 @@ def run_batch_prefixes(
 
     print("============================================================", flush=True)
     print(f"🔥 啟動單一 Colab Session 熱啟動批次生成佇列 (共 {len(prefixes)} 個模型)", flush=True)
-    print(f"   Session: {session} | GPU: {gpu} | 目標面數: {target_faces}", flush=True)
+    print(f"   Session: {session} | GPU: {gpu} | 目標面數: {target_faces} | 風格: {style}", flush=True)
     print(f"   佇列名單: {', '.join(prefixes)}", flush=True)
     print("============================================================", flush=True)
 
@@ -341,7 +343,23 @@ def run_batch_prefixes(
             dt = time.monotonic() - t_item
             results.append(saved)
             timings.append((pfx, dt, mode_str))
-            print(f"✅ [{idx}/{len(prefixes)}] {pfx} 完成！單項總耗時: {dt:.1f} 秒", flush=True)
+            print(f"✅ [{idx}/{len(prefixes)}] {pfx} 幾何產生完成！單項幾何耗時: {dt:.1f} 秒", flush=True)
+
+            if auto_bake:
+                bake_script = Path(__file__).resolve().parent / "bake_multiview_textures.py"
+                final_glb = out_base / f"{pfx}.glb"
+                print(f"🎨 自動呼叫本機 Blender 進行多視角貼圖烘焙 (風格: {style})...", flush=True)
+                bake_cmd = [
+                    sys.executable,
+                    str(bake_script),
+                    "--mesh", str(out_p),
+                    "--front", str(front_p),
+                    "--back", str(back_p),
+                    "--side", str(side_p),
+                    "-o", str(final_glb),
+                    "--style", style,
+                ]
+                subprocess.run(bake_cmd, check=True)
 
         total_sec = time.monotonic() - t_batch_start
         est_ccu = (total_sec / 3600.0) * 4.8
@@ -376,6 +394,8 @@ def main():
     parser.add_argument("--session", default=None, help="重用既有 Colab 會話名稱")
     parser.add_argument("--keep-session", action="store_true", help="執行完畢後保持會話不關閉")
     parser.add_argument("--timeout", type=float, default=3600, help="推論逾時秒數 (預設: 3600)")
+    parser.add_argument("--style", "-s", default="popmart", help="材質風格 (預設: popmart，可選: popmart, anime, ceramic, handpainted, mecha, clay)")
+    parser.add_argument("--auto-bake", action="store_true", help="推論完成後自動呼叫本機 Blender 執行遮擋感知 PBR 貼圖烘焙")
 
     args = parser.parse_args()
 
@@ -391,6 +411,8 @@ def main():
                 session=args.session,
                 keep_session=args.keep_session,
                 timeout=args.timeout,
+                auto_bake=args.auto_bake,
+                style=args.style,
             )
             print(f"\n🎉 批次 {len(saved_list)} 個 3D 模型已全數成功產生！")
         else:
@@ -409,6 +431,24 @@ def main():
                 timeout=args.timeout,
             )
             print(f"\n🎉 3D 模型已成功產生至: {saved}")
+
+            if args.auto_bake:
+                bake_script = Path(__file__).resolve().parent / "bake_multiview_textures.py"
+                out_p = Path(saved).resolve()
+                final_glb = out_p.with_suffix(".glb") if out_p.name.endswith(".orig.glb") else out_p
+                orig_mesh = out_p
+                print(f"🎨 自動呼叫本機 Blender 進行多視角貼圖烘焙 (風格: {args.style})...", flush=True)
+                bake_cmd = [
+                    sys.executable,
+                    str(bake_script),
+                    "--mesh", str(orig_mesh),
+                    "--front", str(Path(args.front).resolve()),
+                    "--back", str(Path(args.back).resolve()),
+                    "--side", str(Path(args.side).resolve()),
+                    "-o", str(final_glb),
+                    "--style", args.style,
+                ]
+                subprocess.run(bake_cmd, check=True)
     except Exception as exc:
         print(f"\n❌ 生成失敗: {exc}", file=sys.stderr)
         sys.exit(1)

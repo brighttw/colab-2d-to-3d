@@ -31,3 +31,7 @@ ref/*
 Thumbs.db
 .vscode/
 .idea/
+
+# Flow credentials & session
+.flow_session.json
+ref/setup_curl.txt
