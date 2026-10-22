@@ -68,6 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--canvas-height", type=int, default=1024, help="輸出畫布高度 (預設: 1024)")
     parser.add_argument("--side-snout-pull", type=float, default=0.0, help="側面圖口鼻向內液化回縮比例 0.0~0.5 (預設: 0.0)")
     parser.add_argument("--clean-ground-shadow", action="store_true", default=False, help="是否強制清除腳底地板陰影 (預設: False)")
+    parser.add_argument("--trim-whiskers", action="store_true", default=True, help="自動修剪突出於輪廓外的細長懸空鬍鬚 (預設開啟)")
+    parser.add_argument("--no-trim-whiskers", action="store_false", dest="trim_whiskers", help="停用輪廓外懸空細鬚修剪")
     parser.add_argument("--delight", type=float, default=0.0, help="2D 固有暗部陰影提亮強度 0.0~0.5 (預設: 0.0)")
     parser.add_argument("--smooth-spikes", type=float, default=0.0, help="高頻背刺邊緣柔化強度 0.0~1.0 (預設: 0.0)")
     parser.add_argument("--tune-workflow", default=None, help="選用：自動優化指定的 workflow_api.json 檔案路徑")
@@ -266,6 +268,58 @@ def clean_background_lines_and_ground_shadow(rgb: np.ndarray, clean_shadow: bool
     out = rgb.copy()
     ext_bg = _find_exterior_background(out, luma_thresh=0.965, sat_thresh=0.035, clean_shadow=clean_shadow)
     out[ext_bg] = 1.0
+    return out
+
+
+def trim_protruding_thin_whiskers(rgb: np.ndarray, radius: int = 6) -> np.ndarray:
+    """
+    透過形態學開運算 (Morphological Opening) 自動消除突出於主體輪廓外的懸空細鬚：
+    - 將外部純白背景 Flood-Fill 後的反向遮罩作為前景 (fg)。
+    - 對前景執行半徑為 radius 的侵蝕與 (radius+1) 的膨脹，得到主體緊實核心 (core_fg)。
+    - 差集 (fg & ~core_fg) 為刺出輪廓外的懸空細刺 (例如貓咪鬍鬚尖端、細浮絲)，直接塗為純白背景。
+    - 角色臉頰內部、軀幹與耳朵結構厚實，100% 完整保留。
+    """
+    out = rgb.copy()
+    ext_bg = _find_exterior_background(out, luma_thresh=0.965, sat_thresh=0.035, clean_shadow=False)
+    fg = ~ext_bg
+
+    # 形態學侵蝕
+    curr = fg.copy()
+    for _ in range(radius):
+        p = np.pad(curr, ((1, 1), (1, 1)), mode="constant", constant_values=False)
+        curr = (
+            curr
+            & p[:-2, 1:-1]
+            & p[2:, 1:-1]
+            & p[1:-1, :-2]
+            & p[1:-1, 2:]
+            & p[:-2, :-2]
+            & p[:-2, 2:]
+            & p[2:, :-2]
+            & p[2:, 2:]
+        )
+
+    # 形態學膨脹還原主體輪廓
+    core_fg = curr.copy()
+    for _ in range(radius + 1):
+        p = np.pad(core_fg, ((1, 1), (1, 1)), mode="constant", constant_values=False)
+        core_fg = (
+            core_fg
+            | p[:-2, 1:-1]
+            | p[2:, 1:-1]
+            | p[1:-1, :-2]
+            | p[1:-1, 2:]
+            | p[:-2, :-2]
+            | p[:-2, 2:]
+            | p[2:, :-2]
+            | p[2:, 2:]
+        )
+
+    thin_protrusions = fg & ~core_fg
+    trimmed_count = int(np.count_nonzero(thin_protrusions))
+    if trimmed_count > 0:
+        out[thin_protrusions] = 1.0
+
     return out
 
 
@@ -476,6 +530,12 @@ def main() -> None:
     front_rgb = clean_background_lines_and_ground_shadow(front_rgb, clean_shadow=args.clean_ground_shadow)
     side_rgb = clean_background_lines_and_ground_shadow(side_rgb, clean_shadow=args.clean_ground_shadow)
     back_rgb = clean_background_lines_and_ground_shadow(back_rgb, clean_shadow=args.clean_ground_shadow)
+
+    if args.trim_whiskers:
+        print("✂️  [2.5/4] 正在修剪刺出輪廓外的懸空極細鬍鬚 (消除 3D 蹼狀生成種子)...")
+        front_rgb = trim_protruding_thin_whiskers(front_rgb, radius=6)
+        side_rgb = trim_protruding_thin_whiskers(side_rgb, radius=6)
+        back_rgb = trim_protruding_thin_whiskers(back_rgb, radius=6)
 
     if args.side_snout_pull > 0.0 or args.delight > 0.0 or args.smooth_spikes > 0.0:
         print(f"🔧 [3/4] 正在執行選用影像調整 (pull={args.side_snout_pull}, delight={args.delight})...")

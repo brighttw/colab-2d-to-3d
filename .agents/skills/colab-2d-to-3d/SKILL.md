@@ -47,6 +47,7 @@ Before running inference, verify the execution environment:
 When the user provides a 3-view turnaround sheet (Left = Front, Middle = Left Side, Right = Back on a white background):
 - Uses **Exterior White Flood-Fill** (`_find_exterior_background`) from image borders so internal white regions (e.g., penguin belly, eye highlights) are 100% preserved.
 - Uses **2D Connected-Component Extraction** so horizontally overlapping parts (e.g., a side view's long tail overlapping X-coordinates with the back view's outstretched arm) are separated cleanly without clipping.
+- **Morphological Whisker & Thin Spike Trimming** (`--trim-whiskers`, default enabled): Automatically trims stray thin whiskers protruding outside the body silhouette into pure white background, preventing AI 3D SDF fields from generating duck-foot webbed flesh sheets while keeping 100% of internal facial whiskers intact.
 - Aligns and pads all three views into `1024x1024` square RGBA PNGs (`{prefix}_{front,side,back}.png`).
 
 ```bash
@@ -89,9 +90,10 @@ python3 scripts/runner.py \
 ### Stage 3: Local Occlusion-Aware Harmonic PBR Baking (`scripts/bake_multiview_textures.py`)
 
 Takes the raw cloud geometry (`<prefix>.orig.glb`) and the three `1024x1024` views to bake a seamless `2048x2048` PBR texture in headless Blender (~12 seconds per model):
-1. Automatically runs Blender `smart_project` UV unwrapping if the mesh has no UVs.
-2. Performs **3D `BVHTree` ray-cast self-occlusion rejection** (`vis_f, vis_b, vis_l, vis_r`) and **side-arm/flipper torso shadow suppression** (`side_arm_shadow`) so A-pose arms or side-view flippers never project phantom marks onto the ribcage/belly.
-3. Solves **36-step Mesh Graph Laplacian Harmonic Inpainting** (`HarmonicColor`) across occluded grooves (e.g., between hedgehog quills or under arms), eliminating lateral zebra striping.
+1. **Universal 3D De-Webbing & Cheek Recontouring** (`clean_thin_webbing_fins`, default enabled): Automatically detects ultra-thin protruding webbing fins/whiskers (< 1.5% model scale) via inward `BVHTree` ray-casting, amputates the webbed fins, caps the root holes, and applies localized Laplacian curvature smoothing to restore a clean, round chibi cheek surface for gaming collision and pad-printed textures.
+2. Automatically runs Blender `smart_project` UV unwrapping if the mesh has no UVs.
+3. Performs **3D `BVHTree` ray-cast self-occlusion rejection** (`vis_f, vis_b, vis_l, vis_r`) and **side-arm/flipper torso shadow suppression** (`side_arm_shadow`) so A-pose arms or side-view flippers never project phantom marks onto the ribcage/belly.
+4. Solves **36-step Mesh Graph Laplacian Harmonic Inpainting** (`HarmonicColor`) across occluded grooves (e.g., between hedgehog quills or under arms), eliminating lateral zebra striping.
 4. Bakes `2048x2048` Cycles geometric Ambient Occlusion (AO) with style-specific shadow curves, and exports a Godot 4 `.glb` using the specified PBR material style (`--style`):
    - **`popmart` (Default)**: Matte vinyl toy (`Roughness=0.66, Metallic=0.0, Specular=0.22, AO=0.32, Clamp=0.35`).
    - **`anime`**: Anime PVC figurine (`Roughness=0.40, Metallic=0.0, Specular=0.38, AO=0.12, Clamp=0.65`).

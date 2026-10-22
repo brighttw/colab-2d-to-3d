@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 import sys
 from typing import Dict, List, Optional
 
+GLOBAL_WHISKER_NEGATIVE = "thin protruding whiskers outside silhouette, floating hair strands, webbed fingers, stray thin spikes"
+GLOBAL_SILHOUETTE_GUIDE = "compact self-contained silhouette without thin floating whiskers or stray hair strands sticking out into the white background (any whiskers or facial markings must stay strictly painted inside the cheek contour)"
+
 
 @dataclass(frozen=True)
 class StyleConfig:
@@ -202,12 +205,14 @@ def generate_prompt(style_name: str, subject: str) -> str:
     )
     background = (
         "Pure solid flat white background (#FFFFFF), no ground shadow, no floor line, no pedestal, "
-        "no text, no labels, generous white margin between the three views so they never touch or overlap."
+        "no text, no labels, generous white margin between the three views so they never touch or overlap. "
+        f"{GLOBAL_SILHOUETTE_GUIDE}."
     )
+    combined_negative = f"{cfg.prompt_negative}, {GLOBAL_WHISKER_NEGATIVE}"
     return (
         f"2D character turnaround sheet of {subject}, {layout}. "
         f"Style: {cfg.prompt_style}. "
-        f"Environment: {background} --ar 21:9 --no {cfg.prompt_negative}"
+        f"Environment: {background} --ar 21:9 --no {combined_negative}"
     )
 
 

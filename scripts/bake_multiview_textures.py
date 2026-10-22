@@ -82,6 +82,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normal-strength", type=float, default=None, help="法線起伏強度 (預設依風格自適應: fur 為 0.75，其他風格為 0.35)")
     parser.add_argument("--sharpen-blending", action="store_true", default=True, help="啟用非線性權重指數銳化，消除多視角毛髮重影 (預設開啟)")
     parser.add_argument("--no-sharpen-blending", action="store_false", dest="sharpen_blending", help="停用權重銳化")
+    parser.add_argument("--eye-refine", action="store_true", default=True, help="自動偵測雙眼並啟用無損抗鋸齒增艷與高光防截斷保護 (預設開啟)")
+    parser.add_argument("--no-eye-refine", action="store_false", dest="eye_refine", help="停用自動眼部精修")
+    parser.add_argument("--clean-webbing", action="store_true", default=True, help="自動檢測並消除懸空薄片與蹼狀鬍鬚黏連 (預設開啟)")
+    parser.add_argument("--no-clean-webbing", action="store_false", dest="clean_webbing", help="停用自動去蹼平滑")
+    parser.add_argument("--cornea-dome", action="store_true", default=True, help="自動沿眼球光學軸微推球面微弧角膜 (預設開啟)")
+    parser.add_argument("--no-cornea-dome", action="store_false", dest="cornea_dome", help="停用微弧角膜幾何微調")
+    parser.add_argument("--fur-gamma", type=float, default=None, help="毛皮深灰質感伽瑪微調 (預設: fur 風格為 1.25 加深濃郁灰階，其他風格為 1.0)")
     parser.add_argument("--update-godot", action="store_true", default=True, help="自動觸發 Godot 4 headless 重新匯入")
     parser.add_argument("--verify", action="store_true", default=True, help="烘焙後自動執行閉環差分質檢 (預設開啟)")
     parser.add_argument("--no-verify", action="store_false", dest="verify", help="停用閉環差分質檢")
@@ -196,6 +203,319 @@ def sample_bilinear_array(arr: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.n
     return top * (1.0 - fy) + bot * fy
 
 
+def detect_eyes_and_ears_universal(
+    px_f: np.ndarray,
+    dist_f: np.ndarray,
+    bbox_f: tuple[float, float, float, float],
+    coords: np.ndarray,
+    normals: np.ndarray,
+    dx: float,
+    dy: float,
+    dz: float,
+    cx: float,
+    cy: float,
+    cz: float,
+    x_rel: np.ndarray,
+    y_rel: np.ndarray,
+    z_rel: np.ndarray,
+) -> dict:
+    """
+    自適應偵測角色 2D/3D 雙眼五官中心、半徑、光學軸，以及幾何耳根高度與鞍部分界。
+    100% 動態計算，無任何寫死座標；若未檢測到雙眼或無外耳，優雅退避安全預設。
+    """
+    h, w, _ = px_f.shape
+    uf_c, uf_w, vf_c, vf_h = bbox_f
+
+    # 1. 2D 雙眼候選搜尋
+    luma = 0.299 * px_f[:, :, 0] + 0.587 * px_f[:, :, 1] + 0.114 * px_f[:, :, 2]
+    u_grid, v_grid = np.meshgrid(np.linspace(0, 1, w), np.linspace(0, 1, h))
+    u_rel = (u_grid - uf_c) / uf_w
+    v_rel = (v_grid - (vf_c - 0.5 * vf_h)) / vf_h
+
+    head_mask = (dist_f > 0.40) & (v_rel >= 0.35) & (v_rel <= 0.90) & (np.abs(u_rel) < 0.36)
+    head_luma = luma[head_mask]
+    dark_thresh = min(0.18, float(np.percentile(head_luma, 8.0)) + 0.05) if len(head_luma) > 0 else 0.12
+    pupil_candidates = head_mask & (luma < dark_thresh)
+
+    visited = np.zeros_like(pupil_candidates, dtype=bool)
+    clusters = []
+    min_pixels = int(0.0002 * w * h)
+    max_pixels = int(0.040 * w * h)
+
+    for y in range(h):
+        for x in range(w):
+            if pupil_candidates[y, x] and not visited[y, x]:
+                q = deque([(y, x)])
+                visited[y, x] = True
+                pts = []
+                while q:
+                    cy_pt, cx_pt = q.popleft()
+                    pts.append((cy_pt, cx_pt))
+                    for ny, nx in ((cy_pt - 1, cx_pt), (cy_pt + 1, cx_pt), (cy_pt, cx_pt - 1), (cy_pt, cx_pt + 1)):
+                        if 0 <= ny < h and 0 <= nx < w and pupil_candidates[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            q.append((ny, nx))
+                if min_pixels <= len(pts) <= max_pixels:
+                    pts_arr = np.array(pts)
+                    cy_m = pts_arr[:, 0].mean()
+                    cx_m = pts_arr[:, 1].mean()
+                    u_m = cx_m / w
+                    v_m = cy_m / h
+                    rad_px = np.sqrt(len(pts) / math.pi)
+                    rad_u = rad_px / w
+                    clusters.append({
+                        "u": u_m, "v": v_m,
+                        "u_rel": (u_m - uf_c) / uf_w,
+                        "v_rel": (v_m - (vf_c - 0.5 * vf_h)) / vf_h,
+                        "rad_u": rad_u, "count": len(pts),
+                        "cy": int(cy_m), "cx": int(cx_m),
+                        "rad_px": int(rad_px)
+                    })
+
+    best_pair = None
+    min_diff = 1e9
+    for i, c1 in enumerate(clusters):
+        for j, c2 in enumerate(clusters):
+            if i >= j:
+                continue
+            if c1["u_rel"] * c2["u_rel"] < 0:
+                left = c1 if c1["u_rel"] < 0 else c2
+                right = c2 if c1["u_rel"] < 0 else c1
+                v_diff = abs(left["v_rel"] - right["v_rel"])
+                sym_diff = abs(abs(left["u_rel"]) - abs(right["u_rel"]))
+                size_ratio = min(left["count"], right["count"]) / max(left["count"], right["count"])
+                if v_diff < 0.08 and sym_diff < 0.14 and size_ratio > 0.35:
+                    score = v_diff * 3.0 + sym_diff * 2.0 + (1.0 - size_ratio)
+                    if score < min_diff:
+                        min_diff = score
+                        best_pair = (left, right)
+
+    crown_mask = (np.abs(x_rel) < 0.05) & (z_rel > 0.70)
+    lateral_mask = (np.abs(x_rel) > 0.08) & (z_rel > 0.70)
+    z_crown = z_rel[crown_mask].max() if crown_mask.any() else 0.85
+    z_lateral = z_rel[lateral_mask].max() if lateral_mask.any() else 0.85
+    has_protruding_ears = (z_lateral > z_crown + 0.035)
+
+    eye_info = None
+    if best_pair is not None:
+        left, right = best_pair
+        u_f_all = uf_c + x_rel * uf_w
+        v_f_all = vf_c + ((coords[:, 2] - cz) / dz) * vf_h
+        front_verts = (normals[:, 1] < -0.15) & (y_rel < 0.0)
+
+        d_l = (u_f_all - left["u"]) ** 2 + (v_f_all - left["v"]) ** 2
+        d_l[~front_verts] = 1e9
+        idx_l = int(np.argmin(d_l))
+
+        d_r = (u_f_all - right["u"]) ** 2 + (v_f_all - right["v"]) ** 2
+        d_r[~front_verts] = 1e9
+        idx_r = int(np.argmin(d_r))
+
+        center_l = coords[idx_l]
+        center_r = coords[idx_r]
+        R_dome = float(max(left["rad_u"], right["rad_u"]) * 1.65 * dx / uf_w)
+
+        mask_l_verts = np.linalg.norm(coords - center_l, axis=1) < R_dome
+        mask_r_verts = np.linalg.norm(coords - center_r, axis=1) < R_dome
+        axis_l = normals[mask_l_verts].mean(axis=0) if mask_l_verts.any() else normals[idx_l]
+        axis_r = normals[mask_r_verts].mean(axis=0) if mask_r_verts.any() else normals[idx_r]
+        axis_l = axis_l / max(1e-5, float(np.linalg.norm(axis_l)))
+        axis_r = axis_r / max(1e-5, float(np.linalg.norm(axis_r)))
+
+        max_eye_z = float(max(z_rel[idx_l], z_rel[idx_r]))
+
+        eye_info = {
+            "center_l": center_l,
+            "center_r": center_r,
+            "R_dome": R_dome,
+            "axis_l": axis_l,
+            "axis_r": axis_r,
+            "max_eye_z": max_eye_z,
+            "left_2d": left,
+            "right_2d": right,
+        }
+
+    ear_z_min = None
+    if has_protruding_ears:
+        floor = (eye_info["max_eye_z"] + (eye_info["R_dome"] / dz) * 0.75) if eye_info else 0.82
+        ear_z_min = max(float(floor), 0.84)
+
+    return {
+        "has_eyes": eye_info is not None,
+        "eye_info": eye_info,
+        "has_protruding_ears": has_protruding_ears,
+        "ear_z_min": ear_z_min,
+    }
+
+
+def clean_thin_webbing_fins(mesh_obj: bpy.types.Object, thickness_ratio: float = 0.015) -> int:
+    """
+    通用 3D 局部薄片厚度檢測與蹼狀物切除 (Ray-cast Thickness De-Webbing)：
+    1. 沿頂點內向法線 -v.normal 執行 BVHTree 射線投射，測量局部前後厚度。
+    2. 識別 inward_thick < thickness_ratio * scale 的極薄頂點，進行 2 圈拓撲擴展後做連通分量分析。
+    3. 僅鎖定中位厚度極薄 (< 0.014 * scale)、頂點數 >= 25 且非耳尖的薄片/蹼狀物 (如懸空鬍鬚蹼)。
+    4. 乾淨切除懸空薄片，使用邊界環縫合與局部細分修補，並在臉頰根部執行區域受控拉普拉斯平滑。
+    回傳被清除的蹼狀頂點總數。
+    """
+    mesh = mesh_obj.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.verts.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    bvh = BVHTree.FromBMesh(bm, epsilon=1e-5)
+
+    n_verts = len(bm.verts)
+    coords = np.array([[v.co.x, v.co.y, v.co.z] for v in bm.verts], dtype=np.float32)
+    x_min, y_min, z_min = coords.min(axis=0)
+    x_max, y_max, z_max = coords.max(axis=0)
+    dx = max(1e-5, float(x_max - x_min))
+    dy = max(1e-5, float(y_max - y_min))
+    dz = max(1e-5, float(z_max - z_min))
+    scale = max(dx, dy, dz)
+    eps = 0.002 * scale
+
+    inward_thick = np.full(n_verts, 999.0, dtype=np.float32)
+    for i, v in enumerate(bm.verts):
+        hit, _, _, dist = bvh.ray_cast(v.co - v.normal * eps, -v.normal, 2.0)
+        if hit is not None:
+            inward_thick[i] = dist
+
+    is_thin = inward_thick < (thickness_ratio * scale)
+    thin_dilated = is_thin.copy()
+    for _ in range(2):
+        nxt = thin_dilated.copy()
+        for v in bm.verts:
+            if thin_dilated[v.index]:
+                for e in v.link_edges:
+                    nxt[e.other_vert(v).index] = True
+        thin_dilated = nxt
+
+    visited = np.zeros(n_verts, dtype=bool)
+    webbing_mask = np.zeros(n_verts, dtype=bool)
+    for i in range(n_verts):
+        if thin_dilated[i] and not visited[i]:
+            q = deque([i])
+            visited[i] = True
+            comp = []
+            while q:
+                curr = q.popleft()
+                comp.append(curr)
+                for e in bm.verts[curr].link_edges:
+                    nb = e.other_vert(bm.verts[curr]).index
+                    if thin_dilated[nb] and not visited[nb]:
+                        visited[nb] = True
+                        q.append(nb)
+            # 必須為薄片且非高處立耳尖端 (z_rel < 0.80)
+            comp_pts = coords[comp]
+            z_rel_comp = (comp_pts[:, 2] - z_min) / dz
+            if len(comp) >= 25 and np.median(inward_thick[comp]) < (0.014 * scale) and z_rel_comp.mean() < 0.80:
+                webbing_mask[comp] = True
+
+    total_web_verts = int(np.count_nonzero(webbing_mask))
+    if total_web_verts == 0:
+        bm.free()
+        return 0
+
+    web_pts = coords[webbing_mask]
+    web_z_max = float(web_pts[:, 2].max()) + 0.015 * scale
+
+    # 向外擴展 1 圈包含根部折角
+    for _ in range(1):
+        nxt = webbing_mask.copy()
+        for v in bm.verts:
+            if webbing_mask[v.index]:
+                for e in v.link_edges:
+                    nxt[e.other_vert(v).index] = True
+        webbing_mask = nxt
+
+    orig_surviving_coords = {
+        (round(v.co.x, 5), round(v.co.y, 5), round(v.co.z, 5))
+        for v in bm.verts if not webbing_mask[v.index]
+    }
+
+    verts_to_del = [v for v in bm.verts if webbing_mask[v.index]]
+    bmesh.ops.delete(bm, geom=verts_to_del, context="VERTS")
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+
+    # 清理孤立微碎片 (< 100 頂點)
+    visited_v = set()
+    for v in list(bm.verts):
+        if v.is_valid and v not in visited_v:
+            q = deque([v])
+            visited_v.add(v)
+            comp_v = []
+            while q:
+                curr = q.popleft()
+                comp_v.append(curr)
+                for e in curr.link_edges:
+                    nb = e.other_vert(curr)
+                    if nb not in visited_v:
+                        visited_v.add(nb)
+                        q.append(nb)
+            if len(comp_v) < 100:
+                bmesh.ops.delete(bm, geom=comp_v, context="VERTS")
+
+    bm.to_mesh(mesh)
+    bm.free()
+
+    # 使用 Edit Mode 高效三角化縫合與局部細分
+    bpy.context.view_layer.objects.active = mesh_obj
+    mesh_obj.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_mode(type="EDGE")
+    bpy.ops.mesh.select_all(action="DESELECT")
+    bpy.ops.mesh.select_non_manifold()
+    bpy.ops.mesh.fill()
+    bpy.ops.mesh.beautify_fill()
+    bpy.ops.mesh.subdivide(number_cuts=3, smoothness=0.0)
+    bpy.ops.mesh.normals_make_consistent(inside=False)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    # 在 BMesh 中鎖定修補區域 + 周圍 6 圈頂點，嚴格受控於雙眼下方 (z <= web_z_max) 與遠離鼻中線進行平滑
+    bm2 = bmesh.new()
+    bm2.from_mesh(mesh)
+    bm2.verts.ensure_lookup_table()
+
+    patch_verts = {
+        v for v in bm2.verts
+        if (round(v.co.x, 5), round(v.co.y, 5), round(v.co.z, 5)) not in orig_surviving_coords
+    }
+    smooth_verts = set(patch_verts)
+    for _ in range(6):
+        for v in list(smooth_verts):
+            for e in v.link_edges:
+                nb = e.other_vert(v)
+                if nb.co.z <= web_z_max and abs(nb.co.x) >= 0.085 * dx:
+                    smooth_verts.add(nb)
+
+    smooth_list = list(smooth_verts)
+    for _ in range(45):
+        old_co = {v: v.co.copy() for v in smooth_list}
+        for v in smooth_list:
+            nbs = [e.other_vert(v) for e in v.link_edges]
+            if nbs:
+                avg = sum((old_co.get(n, n.co) for n in nbs), Vector((0.0, 0.0, 0.0))) / len(nbs)
+                v.co = old_co[v] * 0.20 + avg * 0.80
+
+    bmesh.ops.recalc_face_normals(bm2, faces=bm2.faces[:])
+    bm2.to_mesh(mesh)
+    bm2.free()
+
+    for poly in mesh.polygons:
+        poly.use_smooth = True
+    mesh.update()
+
+    # 清除舊 UV，確保縫合處與平滑後的臉頰重新展開均勻 UV
+    while len(mesh.uv_layers) > 0:
+        mesh.uv_layers.remove(mesh.uv_layers[0])
+
+    return total_web_verts
+
+
 def main() -> None:
     args = parse_args()
     style_cfg = get_style(args.style)
@@ -238,6 +558,15 @@ def main() -> None:
         bpy.ops.object.join()
     mesh_obj = bpy.context.view_layer.objects.active
     mesh = mesh_obj.data
+
+    if mesh.has_custom_normals:
+        bpy.ops.mesh.customdata_custom_splitnormals_clear()
+
+    # 自動檢測並切除懸空薄片與蹼狀鬍鬚黏連 (De-webbing)
+    if args.clean_webbing:
+        n_cleaned = clean_thin_webbing_fins(mesh_obj, thickness_ratio=0.015)
+        if n_cleaned > 0:
+            print(f"✨ [通用去蹼] 成功切除 {n_cleaned} 個懸空薄片/殘蹼頂點，並完成平滑臉頰曲面修補！")
 
     # 焊接重疊頂點並平滑法線，確保網格拓撲連通性以支援拉普拉斯擴散
     bm = bmesh.new()
@@ -300,6 +629,65 @@ def main() -> None:
     z_rel = (coords[:, 2] - z_min) / dz
     y_rel = (coords[:, 1] - cy) / dy
     x_rel = (coords[:, 0] - cx) / dx
+
+    # 自動偵測雙眼五官與幾何耳根/鞍部分界
+    det_res = detect_eyes_and_ears_universal(
+        px_f, dist_f, (uf_c, uf_w, vf_c, vf_h),
+        coords, normals, dx, dy, dz, cx, cy, cz, x_rel, y_rel, z_rel
+    )
+    eye_info = det_res["eye_info"] if args.eye_refine else None
+    has_protruding_ears = det_res["has_protruding_ears"]
+    ear_z_min = det_res["ear_z_min"]
+
+    if eye_info is not None:
+        print(f"👁️  [自適應雙眼感知] 偵測到雙眼五官: L={eye_info['center_l'].round(3)}, R={eye_info['center_r'].round(3)}, R_dome={eye_info['R_dome']:.4f}")
+    if has_protruding_ears:
+        print(f"👂 [自適應耳朵感知] 檢測到角色立耳，自動幾何耳根分界線: z_rel > {ear_z_min:.3f}")
+    else:
+        print(f"👤 [自適應耳朵感知] 檢測為圓頭/無立耳造型，自動停用外耳背強制遮罩")
+
+    # 對 2D 正面圖雙眼 ROI 施加 100% 連續平滑的深邃黑瞳與全色相虹膜增艷 (絕無二值化硬邊鋸齒)
+    if eye_info is not None and args.eye_refine:
+        ih, iw, _ = px_f.shape
+        for eye_data in [eye_info["left_2d"], eye_info["right_2d"]]:
+            cy_e, cx_e = eye_data["cy"], eye_data["cx"]
+            r_box = int(eye_data["rad_px"] * 1.85)
+            y0_e = max(0, cy_e - r_box)
+            y1_e = min(ih, cy_e + r_box)
+            x0_e = max(0, cx_e - r_box)
+            x1_e = min(iw, cx_e + r_box)
+            roi = px_f[y0_e:y1_e, x0_e:x1_e]
+
+            roi_luma = 0.299 * roi[..., 0] + 0.587 * roi[..., 1] + 0.114 * roi[..., 2]
+            dark_factor = 0.30 + 0.70 * np.clip((roi_luma - 0.015) / 0.055, 0.0, 1.0)
+            roi[:] = roi * dark_factor[..., None]
+
+            c_max = np.maximum(roi[..., 0], np.maximum(roi[..., 1], roi[..., 2]))
+            c_min = np.minimum(roi[..., 0], np.minimum(roi[..., 1], roi[..., 2]))
+            chroma = c_max - c_min
+            chroma_factor = np.clip(chroma / 0.18, 0.0, 1.0)
+            mean_c = roi.mean(axis=-1, keepdims=True)
+            sat_boost = 1.0 + 0.40 * chroma_factor[..., None]
+            roi[:] = np.clip(mean_c + (roi - mean_c) * sat_boost, 0.0, 1.0)
+
+    # 毛皮風格深灰濃郁度加深 (僅作用於非眼球的毛皮區域，完整保護雙眼與翡翠綠光環)
+    fur_gamma = float(args.fur_gamma) if args.fur_gamma is not None else (1.50 if is_fur else 1.0)
+    if fur_gamma != 1.0:
+        print(f"🧶 [毛皮深灰質感調節] 套用毛皮 Gamma={fur_gamma:.2f} (深邃厚實灰階，雙眼高光全保護)")
+        ih, iw, _ = px_f.shape
+        eye_protect = np.zeros((ih, iw), dtype=np.float32)
+        if eye_info is not None:
+            y_coords, x_coords = np.ogrid[:ih, :iw]
+            for ed in [eye_info["left_2d"], eye_info["right_2d"]]:
+                d2 = (y_coords - ed["cy"]) ** 2 + (x_coords - ed["cx"]) ** 2
+                r_in = ed["rad_px"] * 1.15
+                r_out = ed["rad_px"] * 1.55
+                w_ed = np.clip((r_out - np.sqrt(d2)) / max(1.0, r_out - r_in), 0.0, 1.0)
+                eye_protect = np.maximum(eye_protect, w_ed)
+        g_map = 1.0 + (fur_gamma - 1.0) * (1.0 - eye_protect[..., None])
+        px_f = np.clip(px_f ** g_map, 0.0, 1.0)
+        px_b = np.clip(px_b ** fur_gamma, 0.0, 1.0)
+        px_s = np.clip(px_s ** fur_gamma, 0.0, 1.0)
 
     # 計算每個頂點在正、背、側視角的投影 UV
     u_f = uf_c + ((coords[:, 0] - cx) / dx) * uf_w
@@ -382,6 +770,15 @@ def main() -> None:
 
     # 在正面臉部與肚皮中央區域 (|x| < 0.32*dx, y < cy, normal.y < -0.35)，強制鎖定純正面視角
     front_lock = (np.abs(coords[:, 0] - cx) < 0.32 * dx) & (coords[:, 1] < cy) & (normals[:, 1] < -0.35) & (sil_f > 0.3)
+    if eye_info is not None:
+        c_l = eye_info["center_l"]
+        c_r = eye_info["center_r"]
+        r_d = eye_info["R_dome"]
+        dist_l_pts = np.linalg.norm(coords - c_l, axis=1)
+        dist_r_pts = np.linalg.norm(coords - c_r, axis=1)
+        eye_cheek_lock = ((dist_l_pts < 1.65 * r_d) | (dist_r_pts < 1.65 * r_d)) & (normals[:, 1] < -0.18) & (sil_f > 0.3)
+        front_lock = front_lock | eye_cheek_lock
+
     w_s[front_lock] = 0.0
     w_b[front_lock] = 0.0
     w_f[front_lock] = np.maximum(w_f[front_lock], 2.0)
@@ -407,17 +804,23 @@ def main() -> None:
         w_b[is_tail] = 0.0
         w_s[is_tail] = 0.0
 
-    # 3D 鬍鬚/薄面特徵辨識：突出臉頰薄片
-    is_whisker = (np.abs(x_rel) > 0.16) & (y_rel < -0.22) & (z_rel > 0.52) & (z_rel < 0.68)
+    # 3D 鬍鬚/薄面特徵辨識：若未啟用去蹼時保留基礎辨識
+    is_whisker = (np.abs(x_rel) > 0.16) & (y_rel < -0.22) & (z_rel > 0.52) & (z_rel < 0.68) if not args.clean_webbing else np.zeros(n_verts, dtype=bool)
 
     # 眼睛辨識 (用於高光與低粗糙度)
-    is_eye = (np.abs(x_rel) > 0.08) & (np.abs(x_rel) < 0.24) & (z_rel > 0.60) & (z_rel < 0.74) & (y_rel < -0.12) & (normals[:, 1] < -0.2)
+    if eye_info is not None:
+        is_eye = ((dist_l_pts < 1.25 * r_d) | (dist_r_pts < 1.25 * r_d)) & (normals[:, 1] < -0.15)
+    else:
+        is_eye = (np.abs(x_rel) > 0.08) & (np.abs(x_rel) < 0.24) & (z_rel > 0.60) & (z_rel < 0.74) & (y_rel < -0.12) & (normals[:, 1] < -0.2)
 
     # 鼻頭辨識
     is_nose = (np.abs(x_rel) < 0.06) & (z_rel > 0.58) & (z_rel < 0.64) & (y_rel < -0.22)
 
-    # 耳朵區域幾何嚴格分區 (徹底杜絕側面圖與正面粉紅內耳滲漏至耳背與外緣)
-    is_ear = (z_rel > 0.70) & (np.abs(x_rel) > 0.08)
+    # 耳朵區域幾何自適應分區 (依幾何鞍部高度動態設定，徹底杜絕側面圖滲漏或切掉眼球外緣)
+    if has_protruding_ears and ear_z_min is not None:
+        is_ear = (z_rel > ear_z_min) & (np.abs(x_rel) > 0.08)
+    else:
+        is_ear = np.zeros(n_verts, dtype=bool)
     if is_ear.any():
         # 1. 側面圖在 2D 壓平時內耳粉紅容易重疊外緣，全耳禁止側面圖投影
         w_s[is_ear] = 0.0
@@ -555,10 +958,11 @@ def main() -> None:
     bm.to_mesh(mesh)
     bm.free()
 
-    # 將無白邊擴展後的視角圖載入 Blender Image
+    # 將無白邊擴展後的視角圖載入 Blender Image (確保色彩空間為 Linear Rec.709，防止二次 Gamma 壓暗)
     def array_to_bpy_image(name: str, arr: np.ndarray) -> bpy.types.Image:
         ih, iw, _ = arr.shape
         im = bpy.data.images.new(name, width=iw, height=ih, alpha=True)
+        im.colorspace_settings.name = "Linear Rec.709"
         rgba = np.ones((ih, iw, 4), dtype=np.float32)
         rgba[:, :, :3] = np.clip(arr, 0.0, 1.0)
         im.pixels[:] = rgba.flatten().tolist()
@@ -661,7 +1065,7 @@ def main() -> None:
     map_ao = nodes.new("ShaderNodeMapRange")
     map_ao.inputs["From Min"].default_value = 0.0
     map_ao.inputs["From Max"].default_value = 1.0
-    map_ao.inputs["To Min"].default_value = 0.65 if is_fur else max(float(style_cfg.ao_min_clamp), 1.0 - float(effective_ao_strength))
+    map_ao.inputs["To Min"].default_value = 0.55 if is_fur else max(float(style_cfg.ao_min_clamp), 1.0 - float(effective_ao_strength))
     map_ao.inputs["To Max"].default_value = 1.0
     map_ao.clamp = True
     links.new(ao_sample_node.outputs["Color"], map_ao.inputs["Value"])
@@ -669,7 +1073,7 @@ def main() -> None:
     mix_ao = nodes.new("ShaderNodeMix")
     mix_ao.data_type = "RGBA"
     mix_ao.blend_type = "MULTIPLY"
-    mix_ao.inputs[0].default_value = 0.75 if is_fur else 1.0
+    mix_ao.inputs[0].default_value = 0.82 if is_fur else 1.0
     links.new(mix3.outputs[2], mix_ao.inputs[6])
     links.new(map_ao.outputs["Result"], mix_ao.inputs[7])
 
@@ -787,7 +1191,7 @@ def main() -> None:
             for loop in face.loops:
                 vi = loop.vert.index
                 if is_eye[vi]:
-                    r_val = 0.12
+                    r_val = 0.04
                 elif is_nose[vi]:
                     r_val = 0.22
                 else:
@@ -863,7 +1267,7 @@ def main() -> None:
     # 針對毛皮風格啟用 Sheen (絨毛邊緣背光散射)
     if is_fur:
         if "Sheen Weight" in bsdf.inputs:
-            bsdf.inputs["Sheen Weight"].default_value = 0.85
+            bsdf.inputs["Sheen Weight"].default_value = 0.15
         if "Sheen Roughness" in bsdf.inputs:
             bsdf.inputs["Sheen Roughness"].default_value = 0.50
 
@@ -903,6 +1307,26 @@ def main() -> None:
 
     mesh_obj.data.materials.clear()
     mesh_obj.data.materials.append(pbr_mat)
+
+    # 自動微弧角膜 (Cornea Dome: 沿自適應眼球光學軸微推球面微弧)
+    if args.cornea_dome and eye_info is not None:
+        c_l = eye_info["center_l"]
+        c_r = eye_info["center_r"]
+        r_d = eye_info["R_dome"]
+        ax_l = eye_info["axis_l"]
+        ax_r = eye_info["axis_r"]
+        h_d = 0.075 * r_d
+
+        d_l = np.linalg.norm(coords - c_l, axis=1)
+        d_r = np.linalg.norm(coords - c_r, axis=1)
+        disp_l = np.where(d_l < r_d, h_d * np.cos(math.pi * d_l / (2.0 * r_d)) ** 2, 0.0)[:, None] * ax_l[None, :]
+        disp_r = np.where(d_r < r_d, h_d * np.cos(math.pi * d_r / (2.0 * r_d)) ** 2, 0.0)[:, None] * ax_r[None, :]
+
+        new_coords = coords + disp_l + disp_r
+        for i, v in enumerate(mesh.vertices):
+            v.co = new_coords[i]
+        mesh.update()
+        print(f"👁️  已成功套用自適應微弧角膜 (Cornea Dome, R={r_d:.4f}m, h={h_d*1000:.1f}mm)")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.export_scene.gltf(
